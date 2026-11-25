@@ -2295,29 +2295,33 @@ impl HostHeap {
         }
         b.full = (frame, false);
         let prev = b.plan.clone();
-        let reads = if b.reads_dirty || prev.is_none() {
-            b.reads_dirty = false;
-            Arc::new(b.reads.build())
-        } else {
-            prev.as_ref().unwrap().reads.clone()
+        let reads = match &prev {
+            Some(prev) if !b.reads_dirty => prev.reads.clone(),
+            _ => {
+                b.reads_dirty = false;
+                Arc::new(b.reads.build())
+            }
         };
-        let writes = if b.writes_dirty || prev.is_none() {
-            b.writes_dirty = false;
-            Arc::new(b.writes.build())
-        } else {
-            prev.as_ref().unwrap().writes.clone()
+        let writes = match &prev {
+            Some(prev) if !b.writes_dirty => prev.writes.clone(),
+            _ => {
+                b.writes_dirty = false;
+                Arc::new(b.writes.build())
+            }
         };
-        let bounces = if b.bounces_dirty || prev.is_none() {
-            b.bounces_dirty = false;
-            Arc::new(b.build_bounces())
-        } else {
-            prev.as_ref().unwrap().bounces.clone()
+        let bounces = match &prev {
+            Some(prev) if !b.bounces_dirty => prev.bounces.clone(),
+            _ => {
+                b.bounces_dirty = false;
+                Arc::new(b.build_bounces())
+            }
         };
-        let retained = if b.retained_dirty || prev.is_none() {
-            b.retained_dirty = false;
-            Arc::new(b.build_retained())
-        } else {
-            prev.as_ref().unwrap()._retained.clone()
+        let retained = match &prev {
+            Some(prev) if !b.retained_dirty => prev._retained.clone(),
+            _ => {
+                b.retained_dirty = false;
+                Arc::new(b.build_retained())
+            }
         };
         let plan = Arc::new(BindlessPlan {
             reads,
@@ -2482,6 +2486,7 @@ impl HostHeap {
         text
     }
 
+    #[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
     pub(crate) fn describe_slot(&self, index: u32) -> Option<String> {
         let key = *self
             .made
@@ -2631,12 +2636,14 @@ fn view_stride(view: &View) -> u32 {
 
 /// The elements of the title's buffer view `view` (0 for other views).
 fn view_count(view: &View) -> u32 {
+    #[allow(clippy::unnecessary_lazy_evaluations)] // reads the union only for a buffer
     let srv = |w: &[u32; 10]| {
         let desc = srv_desc(w);
         // SAFETY: a buffer view's union member.
         (desc.ViewDimension == D3D12_SRV_DIMENSION_BUFFER)
             .then(|| unsafe { desc.Anonymous.Buffer }.NumElements)
     };
+    #[allow(clippy::unnecessary_lazy_evaluations)]
     let uav = |w: &[u32; 10]| {
         let desc = uav_desc(w);
         // SAFETY: a buffer view's union member.

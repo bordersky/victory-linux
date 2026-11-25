@@ -180,7 +180,7 @@ impl CardState {
             return None;
         }
         let (min_bytes, max_bytes) = limits();
-        if size < min_bytes || size >= (1 << 30) || size % PAGE as u64 != 0 {
+        if size < min_bytes || size >= (1 << 30) || !size.is_multiple_of(PAGE as u64) {
             return None;
         }
         if !host.card_ready() {
@@ -816,8 +816,8 @@ impl CardEngine {
         if plan.entries.is_empty() {
             return 0;
         }
-        // SAFETY: GPU finished writing `differs_rb` before the fence returned.
         let differs: &[u32] = if plan.total_pieces > 0 {
+            // SAFETY: GPU finished writing `differs_rb` before the fence returned.
             unsafe {
                 std::slice::from_raw_parts(
                     self.differs_rb.1 as *const u32,
@@ -880,6 +880,8 @@ impl CardEngine {
         if total_bytes > 0
             && let Some((fetch_res, fetch_ptr)) = self.ensure_fetch_capacity(host, total_bytes)
         {
+            // SAFETY: the fetch list and its allocator are this engine's own,
+            // and the GPU is done with them (each use is waited on below).
             let ok = unsafe {
                 self.fetch_alloc.Reset().is_ok()
                     && self.fetch_list.Reset(&self.fetch_alloc, None).is_ok()
@@ -898,6 +900,7 @@ impl CardEngine {
                         );
                     }
                 }
+                // SAFETY: closes the fetch list recorded just above.
                 if unsafe { self.fetch_list.Close() }.is_ok()
                     && let Ok(cmd) = self.fetch_list.cast::<ID3D12CommandList>()
                 {
@@ -1026,6 +1029,7 @@ mod tests {
         host.execute_and_wait_locked(before.unwrap(), &mut submitted);
         host.execute_and_wait_locked(after, &mut submitted);
 
+        // SAFETY: the readback holds `pages` words, written before the wait.
         let differs_1 = unsafe {
             std::slice::from_raw_parts(engine.differs_rb.1 as *const u32, pages).to_vec()
         };
@@ -1037,7 +1041,9 @@ mod tests {
         // 4 different bytes on the same page 2.
         let (patch_buf, patch_ptr) = host.shared_buffer(256).expect("patch buffer");
         let gpu_bytes = [0xDEu8, 0xAD, 0xBE, 0xEF];
+        // SAFETY: `patch_ptr` maps the 256-byte buffer created just above.
         unsafe { std::ptr::copy_nonoverlapping(gpu_bytes.as_ptr(), patch_ptr, 4) };
+        // SAFETY: D3D12 calls on the test's own device, list and buffers.
         unsafe {
             let alloc: ID3D12CommandAllocator = host
                 .device

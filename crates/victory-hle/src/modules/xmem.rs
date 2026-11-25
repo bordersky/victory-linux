@@ -1166,6 +1166,121 @@ pub(crate) fn module() -> HleModule {
     }
 }
 
+/// Logs every `VICTORY_MEMORY_LOG_SECS` seconds (5 by default, 0: never)
+/// where the process's commit charge goes, for runs that near the host's
+/// commit limit (loading the title's world): committed memory by
+/// kind and its largest private allocations, the physical pages, and what
+/// the GPU side holds.
+fn start_memory_log() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let secs = std::env::var("VICTORY_MEMORY_LOG_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(5);
+        if secs == 0 {
+            return;
+        }
+        let _ = std::thread::Builder::new()
+            .name("memory log".into())
+            .spawn(move || {
+                let mut peak = 0;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(secs));
+                    log_memory(&mut peak);
+                }
+            });
+    });
+}
+
+fn log_memory(peak: &mut usize) {
+    use windows_sys::Win32::System::Memory::{MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE, VirtualQuery};
+    let mut counters = PROCESS_MEMORY_COUNTERS {
+        cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: our own process and a sized structure.
+    unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+    let commit = counters.PagefileUsage;
+    *peak = (*peak).max(commit);
+    // Committed bytes by kind, and private ones by allocation.
+    let (mut private, mut mapped, mut image) = (0usize, 0usize, 0usize);
+    // Private memory below 2^40 is the title's (`XMemVirtualAlloc` keeps
+    // it there); above, the host heap's, the driver's and the title's own
+    // kernel32 allocations. Allocations by size: under 1, 16, 64 MiB, more.
+    let mut low = 0usize;
+    let mut sizes = [(0usize, 0usize); 4];
+    let mut by_base: HashMap<usize, usize> = HashMap::new();
+    let mut at = 0usize;
+    loop {
+        // SAFETY: plain data filled in by the query.
+        let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: a valid out pointer of the right size.
+        let n = unsafe { VirtualQuery(at as *const c_void, &mut info, size_of_val(&info)) };
+        if n == 0 || info.RegionSize == 0 {
+            break;
+        }
+        if info.State == MEM_COMMIT {
+            match info.Type {
+                MEM_PRIVATE => {
+                    private += info.RegionSize;
+                    *by_base.entry(info.AllocationBase as usize).or_default() += info.RegionSize;
+                }
+                MEM_MAPPED => mapped += info.RegionSize,
+                MEM_IMAGE => image += info.RegionSize,
+                _ => {}
+            }
+        }
+        let Some(next) = (info.BaseAddress as usize).checked_add(info.RegionSize) else {
+            break;
+        };
+        at = next;
+    }
+    for (&base, &n) in &by_base {
+        if base < 1 << 40 {
+            low += n;
+        }
+        let bucket = match n {
+            n if n < MIB => 0,
+            n if n < 16 * MIB => 1,
+            n if n < 64 * MIB => 2,
+            _ => 3,
+        };
+        sizes[bucket].0 += 1;
+        sizes[bucket].1 += n;
+    }
+    let sizes: Vec<String> = ["<1M", "<16M", "<64M", ">=64M"]
+        .iter()
+        .zip(sizes)
+        .map(|(name, (count, n))| format!("{name} {count}x {} MiB", n / MIB))
+        .collect();
+    let mut largest: Vec<(usize, usize)> = by_base.into_iter().collect();
+    largest.sort_unstable_by_key(|&(_, n)| std::cmp::Reverse(n));
+    let largest: Vec<String> = largest
+        .iter()
+        .take(8)
+        .map(|(base, n)| format!("{base:#x} {} MiB", n / MIB))
+        .collect();
+    let pages = physical().pages.len() * PAGE;
+    tracing::info!(
+        target: "victory::memory",
+        "commit {} MiB (peak {} MiB): private {} MiB (title range {} MiB; by allocation: {}), \
+         mapped {} MiB, image {} MiB; \
+         physical pages {} MiB of sections {} MiB; {}; largest private: {}",
+        commit / MIB,
+        *peak / MIB,
+        private / MIB,
+        low / MIB,
+        sizes.join(", "),
+        mapped / MIB,
+        image / MIB,
+        pages / MIB,
+        SECTION_BYTES.load(Ordering::Relaxed) / MIB,
+        victory_gpu::memory_report(),
+        largest.join(", "),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1622,119 +1737,4 @@ mod tests {
         assert_eq!(XMemMapPhysicalPages(a, 1, std::ptr::null()), a);
         assert_eq!(XMemFreePhysicalPages(3, pages.as_ptr()), 1);
     }
-}
-
-/// Logs every `VICTORY_MEMORY_LOG_SECS` seconds (5 by default, 0: never)
-/// where the process's commit charge goes, for runs that near the host's
-/// commit limit (loading the title's world): committed memory by
-/// kind and its largest private allocations, the physical pages, and what
-/// the GPU side holds.
-fn start_memory_log() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        let secs = std::env::var("VICTORY_MEMORY_LOG_SECS")
-            .ok()
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .unwrap_or(5);
-        if secs == 0 {
-            return;
-        }
-        let _ = std::thread::Builder::new()
-            .name("memory log".into())
-            .spawn(move || {
-                let mut peak = 0;
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(secs));
-                    log_memory(&mut peak);
-                }
-            });
-    });
-}
-
-fn log_memory(peak: &mut usize) {
-    use windows_sys::Win32::System::Memory::{MEM_IMAGE, MEM_MAPPED, MEM_PRIVATE, VirtualQuery};
-    let mut counters = PROCESS_MEMORY_COUNTERS {
-        cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: our own process and a sized structure.
-    unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
-    let commit = counters.PagefileUsage;
-    *peak = (*peak).max(commit);
-    // Committed bytes by kind, and private ones by allocation.
-    let (mut private, mut mapped, mut image) = (0usize, 0usize, 0usize);
-    // Private memory below 2^40 is the title's (`XMemVirtualAlloc` keeps
-    // it there); above, the host heap's, the driver's and the title's own
-    // kernel32 allocations. Allocations by size: under 1, 16, 64 MiB, more.
-    let mut low = 0usize;
-    let mut sizes = [(0usize, 0usize); 4];
-    let mut by_base: HashMap<usize, usize> = HashMap::new();
-    let mut at = 0usize;
-    loop {
-        // SAFETY: plain data filled in by the query.
-        let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
-        // SAFETY: a valid out pointer of the right size.
-        let n = unsafe { VirtualQuery(at as *const c_void, &mut info, size_of_val(&info)) };
-        if n == 0 || info.RegionSize == 0 {
-            break;
-        }
-        if info.State == MEM_COMMIT {
-            match info.Type {
-                MEM_PRIVATE => {
-                    private += info.RegionSize;
-                    *by_base.entry(info.AllocationBase as usize).or_default() += info.RegionSize;
-                }
-                MEM_MAPPED => mapped += info.RegionSize,
-                MEM_IMAGE => image += info.RegionSize,
-                _ => {}
-            }
-        }
-        let Some(next) = (info.BaseAddress as usize).checked_add(info.RegionSize) else {
-            break;
-        };
-        at = next;
-    }
-    for (&base, &n) in &by_base {
-        if base < 1 << 40 {
-            low += n;
-        }
-        let bucket = match n {
-            n if n < MIB => 0,
-            n if n < 16 * MIB => 1,
-            n if n < 64 * MIB => 2,
-            _ => 3,
-        };
-        sizes[bucket].0 += 1;
-        sizes[bucket].1 += n;
-    }
-    let sizes: Vec<String> = ["<1M", "<16M", "<64M", ">=64M"]
-        .iter()
-        .zip(sizes)
-        .map(|(name, (count, n))| format!("{name} {count}x {} MiB", n / MIB))
-        .collect();
-    let mut largest: Vec<(usize, usize)> = by_base.into_iter().collect();
-    largest.sort_unstable_by_key(|&(_, n)| std::cmp::Reverse(n));
-    let largest: Vec<String> = largest
-        .iter()
-        .take(8)
-        .map(|(base, n)| format!("{base:#x} {} MiB", n / MIB))
-        .collect();
-    let pages = physical().pages.len() * PAGE;
-    tracing::info!(
-        target: "victory::memory",
-        "commit {} MiB (peak {} MiB): private {} MiB (title range {} MiB; by allocation: {}), \
-         mapped {} MiB, image {} MiB; \
-         physical pages {} MiB of sections {} MiB; {}; largest private: {}",
-        commit / MIB,
-        *peak / MIB,
-        private / MIB,
-        low / MIB,
-        sizes.join(", "),
-        mapped / MIB,
-        image / MIB,
-        pages / MIB,
-        SECTION_BYTES.load(Ordering::Relaxed) / MIB,
-        victory_gpu::memory_report(),
-        largest.join(", "),
-    );
 }

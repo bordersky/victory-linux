@@ -15,6 +15,10 @@
 //! share, [`console`] which console model the title sees. Planned:
 //! `present` (swap chain).
 
+// Style lints this crate opts out of: its tuples and D3D12 call sites read
+// better spelled out than behind one-use aliases or argument structs.
+#![allow(clippy::type_complexity, clippy::too_many_arguments)]
+
 #[cfg(all(windows, feature = "diagnostics"))]
 mod capture;
 #[cfg(windows)]

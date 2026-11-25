@@ -661,6 +661,7 @@ static FUNCTIONS: Table<36> = Table(queue_table(false));
 static NEWER_FUNCTIONS: Table<36> = Table(queue_table(true));
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn test_queue() -> (This, usize) {
     let desc = QueueDesc {
         kind: 0,
