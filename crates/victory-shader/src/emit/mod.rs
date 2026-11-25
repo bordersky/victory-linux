@@ -312,12 +312,11 @@ pub fn translate_for(container: &[u8], target: Target) -> Result<HostShader, Sha
         emit(&c, &native, &p, &st, &io, &res, target)
     };
     let compute = native.stage == HwStage::Cs && rays();
-    let plain = match with(traces && compute) {
+    match with(traces && compute) {
         Err(ShaderError::Unsupported { .. }) if compute && !traces => with(true),
         Err(ShaderError::Unsupported { .. }) if compute => with(false),
-        done => return done,
-    };
-    plain
+        done => done,
+    }
 }
 
 /// Emits a program whose earlier stages already ran, for `target`.
@@ -510,6 +509,7 @@ fn emit_program(
 /// Interpolation modes of the input (for pixel) or output (for vertex/mesh)
 /// signature elements carried in a container's `PSV0` part: `(row, col, kind,
 /// interp)`.
+#[allow(clippy::type_complexity)]
 fn psv_interp(part: &[u8], pixel: bool) -> Option<Vec<(Option<u32>, u8, u8, u8)>> {
     use crate::dxbc::u32_at;
     let info_sz = u32_at(part, 0).ok()? as usize;
