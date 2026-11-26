@@ -30,7 +30,7 @@ Same spot in the prologue (an indoor scene), shader cache warm:
 
 With `--rt` the title's own ray-traced light runs: bounce light, sun and lamp
 shadows; without it rooms that the sun does not reach are lit by a constant
-ambient instead. Characters keep their faces and skin with the settings below.
+ambient instead. Characters keep their faces and skin with the settings below, in a session started from a new game (resuming from a checkpoint loses the main characters' faces: open).
 Minor graphical glitches remain.
 
 ## What this project adds
@@ -45,7 +45,7 @@ credited otherwise.
 | ~13,000 `VirtualQuery` a frame, contending on Wine's one `virtual_mutex` | Wine answers no `MemoryRegionInformationEx`, so no hole is ever known; a `VirtualQuery` fallback (Kayotic1337) | carried here, [avatarmanz#59](https://github.com/avatarmanz/VIctory-7900XTX/issues/59); here ~10 a frame |
 | The ray-tracing builder needs a global shortcut (`VICTORY_FIRSTLANE_OWN=1`) | no program of the title's shader archive needs it (all 26,084 translate without it); taken by default in the builder's programs only | here, [avatarmanz#101](https://github.com/avatarmanz/VIctory-7900XTX/issues/101#issuecomment-7183022660) |
 | Ray-tracing pipelines never arrive | the dxil-spirv in released vkd3d-proton recurses without bound on some large compute shaders and the pipeline thread dies; fixed in vkd3d-proton master | `VICTORY_VKD3D`, [avatarmanz#111](https://github.com/avatarmanz/VIctory-7900XTX/issues/111#issuecomment-7183122720) |
-| Main characters load without faces (eyes, teeth and hair only) | a checkpoint save written while the process was killed; not the builder, the settings or memory | saves copied at each start, [avatarmanz#67](https://github.com/avatarmanz/VIctory-7900XTX/issues/67#issuecomment-7183095006) |
+| Main characters without faces (eyes, teeth and hair only) | not a bad save: a session resumed from a checkpoint draws them so, any setting, builder on or off; a new game draws them | open, [avatarmanz#67](https://github.com/avatarmanz/VIctory-7900XTX/issues/67#issuecomment-7184111949) |
 | Faces and skinned meshes wrong under vkd3d-proton | relay stage 2 and card steps (firefloc, #13), the land echo (#59) | `run.sh` defaults below |
 | Seconds a frame with the GPU idle | stock wineserver keeps mapped views in a list (Wine bug 60868) | patched wineserver, below |
 
@@ -113,8 +113,8 @@ overridden from the environment):
 **Memory:** with `--rt` the process keeps ~15 GB resident and the card uses
 ~8-9 GB of system memory besides; 32 GB is enough with little else open.
 **Saves:** `run.sh` copies the save folder at each start (the last five are
-kept in `saves-backup/`); if characters lose their faces after a crash, put the
-latest good copy back.
+kept in `saves-backup/`). Resuming from a checkpoint currently loses the main
+characters' faces here; a new game keeps them.
 
 ## Licence
 
