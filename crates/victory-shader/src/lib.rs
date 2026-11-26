@@ -6,6 +6,7 @@
 //! (compiler options) and the zlib-compressed GFX10 code. The bitcode may use
 //! console-only intrinsics, so the GFX10 code is translated in general.
 
+pub mod bvh;
 pub mod dxbc;
 pub mod dxil;
 pub mod emit;
@@ -14,14 +15,13 @@ pub mod io;
 pub mod ir;
 pub mod native;
 pub mod resource;
-pub mod sgpr_spill;
+pub mod spill;
 pub mod structure;
-pub mod unspill;
 
 pub use dxbc::{Container, FourCC, Part};
 pub use dxil::{DxilProgram, ShaderKind, XboxExtras};
 pub use native::{
-    HwStage, NativeProgram, ResourceType, RootParam, RootType, UsedResource, container_programs, native_programs,
+    HwStage, NativeProgram, ResourceType, RootParam, RootType, UsedResource, native_programs,
 };
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

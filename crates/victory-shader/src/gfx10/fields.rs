@@ -11,7 +11,9 @@ use super::{Encoding, Instruction};
 pub enum Operand {
     /// Scalar registers by operand code: 0-105 `s0`-`s105`, 106/107
     /// `vcc_lo`/`vcc_hi`, 108-123 `ttmp0`-`ttmp15`, 124 `m0`, 125 `null`,
-    /// 126/127 `exec_lo`/`exec_hi`.
+    /// 126/127 `exec_lo`/`exec_hi`. The decoder gives no code above 127; the
+    /// IR names scalars parked in VGPR lanes by the codes from 128 up
+    /// (`crate::ir::PARKED`).
     Scalar {
         code: u8,
         dwords: u8,
@@ -233,19 +235,32 @@ impl Instruction {
             }
             Encoding::Sopp => Fields::Sopp { imm: w0 as u16 },
             Encoding::Smem => {
-                let data = match name {
-                    "s_gl1_inv" | "s_dcache_inv" | "s_dcache_wb" => None,
-                    n if n.starts_with("s_dcache_discard") => None,
-                    "s_memtime" | "s_memrealtime" => Some(2),
-                    _ => Some(data_dwords(name)),
+                let sdata = (w0 >> 6 & 0x7F) as u8;
+                // s_atc_probe*: SDATA is a 7-bit immediate, not an SGPR. The
+                // buffer form's resource is 4 dwords. GLC and DLC are not operands.
+                let probe = matches!(name, "s_atc_probe" | "s_atc_probe_buffer");
+                let data = if probe {
+                    Some(Operand::Literal(u32::from(sdata)))
+                } else {
+                    match name {
+                        "s_gl1_inv" | "s_dcache_inv" | "s_dcache_wb" => None,
+                        n if n.starts_with("s_dcache_discard") => None,
+                        "s_memtime" | "s_memrealtime" => Some(scalar(sdata, 2)),
+                        _ => Some(scalar(sdata, data_dwords(name))),
+                    }
                 };
-                let base = 2 + 2 * u8::from(name.starts_with("s_buffer_"));
+                let base =
+                    2 + 2 * u8::from(name.starts_with("s_buffer_") || name == "s_atc_probe_buffer");
                 Fields::Smem {
-                    data: data.map(|d| scalar((w0 >> 6 & 0x7F) as u8, d)),
+                    data,
                     base: scalar(((w0 & 0x3F) << 1) as u8, base),
                     offset: (w1 << 11) as i32 >> 11,
                     soffset: scalar((w1 >> 25) as u8, 1),
-                    cache: cache(bit(w0, 16), false, bit(w0, 14)),
+                    cache: if probe {
+                        Cache::default()
+                    } else {
+                        cache(bit(w0, 16), false, bit(w0, 14))
+                    },
                 }
             }
             Encoding::Vop1 | Encoding::Vop2 | Encoding::Vopc | Encoding::Vop3 | Encoding::Vop3p => {
@@ -298,9 +313,7 @@ impl Instruction {
                             | "ds_gws_sema_release_all"
                     ) {
                     0
-                } else if pair || name.contains("cmpst") || name.contains("mskor")
-                    || name == "ds_wrap_rtn_b32"
-                {
+                } else if pair || name.contains("cmpst") || name.contains("mskor") {
                     2
                 } else {
                     1
@@ -387,9 +400,6 @@ impl Instruction {
                 let glc = bit(w0, 16);
                 let n = data_dwords(name);
                 let (load, atomic) = (name.contains("_load_"), name.contains("_atomic_"));
-                // Scratch with `saddr` 0x7F (EXEC_HI) has neither address
-                // register, only the offset (LLVM's GFX10 "ST" mode).
-                let st = self.encoding == Encoding::Scratch && saddr == 0x7F;
                 let addr = match self.encoding {
                     Encoding::Flat => Some(vector(w1 & 0xFF, 2)),
                     Encoding::Global => Some(vector(w1 & 0xFF, 1 + u8::from(saddr == NULL))),
@@ -405,9 +415,11 @@ impl Instruction {
                     dst: (load || atomic && glc).then(|| vector(w1 >> 24, ret)),
                     addr,
                     data: (!load).then(|| vector(w1 >> 8 & 0xFF, n)),
-                    saddr: (self.encoding != Encoding::Flat && !st)
+                    saddr: (self.encoding != Encoding::Flat)
                         .then(|| scalar(saddr, 1 + u8::from(self.encoding == Encoding::Global))),
                     offset: match self.encoding {
+                        // GFX10 FLAT offsets are 11-bit and unsigned: the
+                        // hardware ignores bit 11.
                         Encoding::Flat => (w0 & 0x7FF) as i16,
                         _ => ((w0 << 4) as i16) >> 4,
                     },
@@ -810,16 +822,9 @@ fn image_addr_dwords(name: &str, dim: u8, a16: bool) -> u8 {
     } else if name.contains("_mip") {
         packed += 1;
     }
-    // GFX10.3 sizes derivatives by the opcode (`_g16`: two per dword, each
-    // direction its own) and coordinates and levels by a16, apart (LLVM
-    // `SITargetLowering::lowerImage` where `hasG16`; its MC test
-    // gfx10_asm_mimg.s has `image_sample_d ... 2D a16` with five address
-    // dwords: four derivatives and the packed coordinates).
-    let derivs = if name.ends_with("_g16") {
-        2 * derivs.div_ceil(2)
+    if a16 {
+        whole + 2 * derivs.div_ceil(2) + packed.div_ceil(2)
     } else {
-        2 * derivs
-    };
-    let packed = if a16 { packed.div_ceil(2) } else { packed };
-    whole + derivs + packed
+        whole + 2 * derivs + packed
+    }
 }

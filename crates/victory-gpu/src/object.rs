@@ -78,37 +78,6 @@ pub(crate) extern "system" fn release(this: This) -> u32 {
     refs.load(Ordering::Relaxed)
 }
 
-/// A reference to one of our objects, released when dropped.
-pub(crate) struct Ref(This);
-
-// SAFETY: reference counts are atomic, and the objects kept this way
-// (fences, resources) may be used from any thread.
-unsafe impl Send for Ref {}
-
-impl Ref {
-    /// A new reference to `this`, not null.
-    pub(crate) fn new(this: This) -> Ref {
-        add_ref(this);
-        Ref(this)
-    }
-
-    pub(crate) fn get(&self) -> This {
-        self.0
-    }
-}
-
-impl Drop for Ref {
-    fn drop(&mut self) {
-        // SAFETY: one of our objects: its first field is its table, whose
-        // third method is `Release`.
-        unsafe {
-            let table = *self.0.cast::<*const *const ()>();
-            let release: extern "system" fn(This) -> u32 = std::mem::transmute(*table.add(2));
-            release(self.0);
-        }
-    }
-}
-
 /// Answers an interface query (or any call handing out an object): a new
 /// reference to `found`, or null and `E_NOINTERFACE`.
 pub(crate) fn answer(kind: usize, iid: *const Iid, found: Option<This>, out: *mut This) -> HRESULT {
@@ -132,10 +101,13 @@ pub(crate) fn answer(kind: usize, iid: *const Iid, found: Option<This>, out: *mu
     hr
 }
 
-/// Whether `iid` is one of `known`.
+/// `IUnknown`, which every COM object answers for.
+pub(crate) const IUNKNOWN: Iid = guid(0, 0, 0, [0xc0, 0, 0, 0, 0, 0, 0, 0x46]);
+
+/// Whether `iid` is one of `known`, or `IUnknown`.
 pub(crate) fn is(iid: *const Iid, known: &[Iid]) -> bool {
     // SAFETY: the title passes an interface id (null is tolerated).
-    unsafe { iid.as_ref() }.is_some_and(|i| known.contains(i))
+    unsafe { iid.as_ref() }.is_some_and(|i| *i == IUNKNOWN || known.contains(i))
 }
 
 /// Hands a new object to the title as one of `known`, or drops it. `T`
@@ -556,5 +528,37 @@ mod tests {
         );
         assert_eq!(g[..4], [0xf1, 0x19, 0x98, 0x18]);
         assert_eq!(guid_text(&g), "189819f1-1db6-4b57-be54-1821339b85f7");
+    }
+
+    /// Every COM object answers for `IUnknown`, and with one pointer
+    /// whichever of its interfaces is asked: the object's identity.
+    #[test]
+    fn every_object_answers_for_iunknown() {
+        type Query = extern "system" fn(This, *const Iid, *mut This) -> HRESULT;
+        let unknown = |object: This| {
+            let mut found = std::ptr::null();
+            let hr = slot::<Query>(object, 0)(object, &IUNKNOWN, &mut found);
+            (hr, found)
+        };
+        let device = crate::device::device();
+        let mut fence = std::ptr::null();
+        let fence_iid = &crate::fence::FENCE_IIDS[0];
+        assert_eq!(
+            crate::fence::create(std::ptr::null(), 0, 0, fence_iid, &mut fence),
+            S_OK
+        );
+        assert_eq!(unknown(device), (S_OK, device));
+        assert_eq!(unknown(fence), (S_OK, fence));
+        // The DXGI device is the same object as the device it answers for.
+        assert_eq!(unknown(crate::dxgi::device()), (S_OK, device));
+        // An id nobody has is still nobody's.
+        let mut found = fence;
+        let nobodys = guid(0x189819f1, 0x1db6, 0x4b57, [0xbe; 8]);
+        assert_eq!(
+            slot::<Query>(fence, 0)(fence, &nobodys, &mut found),
+            E_NOINTERFACE
+        );
+        assert!(found.is_null());
+        slot::<extern "system" fn(This) -> u32>(fence, 0x10)(fence);
     }
 }

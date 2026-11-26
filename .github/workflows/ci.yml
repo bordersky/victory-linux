@@ -23,9 +23,6 @@ jobs:
       - uses: actions/checkout@v5
       # The version and components pinned in rust-toolchain.toml.
       - run: rustup toolchain install
-      - name: BCPack tables (not stored in the repository)
-        shell: bash
-        run: bash linux/fetch-tables.sh
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

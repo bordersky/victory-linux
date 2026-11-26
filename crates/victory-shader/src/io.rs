@@ -26,14 +26,14 @@
 //! index from the wave index (s3 bits 24-27) and the lane (`v_mbcnt`), and
 //! its group id from v5 of the first lane (`v_readfirstlane`: the group
 //! times the group size). Lane n exports vertex n (`exp pos`, `exp param`)
-//! and primitive n (`exp prim`: 10-bit vertex indices at bits 0, 10, 20,
-//! bit 31 culls); `param` entries with bit 7 are per-primitive outputs. One
-//! lane sends the output counts (`s_sendmsg` GS_ALLOC_REQ, m0 = vertices |
-//! primitives << 12).
+//! and primitive n (`exp prim`: 9-bit vertex indices at bits 0, 10, 20,
+//! each with an edge flag above it, bit 31 culls); `param` entries with
+//! bit 7 are per-primitive outputs. One lane sends the output counts
+//! (`s_sendmsg` GS_ALLOC_REQ, m0 = vertices | primitives << 12).
 
 use crate::ShaderError;
 use crate::gfx10::{Fields, Operand};
-use crate::ir::{Inst, Program, Reg, Value};
+use crate::ir::{Exit, Inst, Program, Reg, Value, operand_reads};
 use crate::native::{HwStage, NativeProgram, PsInput, StageIo, Usage};
 use crate::resource::Site;
 
@@ -243,13 +243,52 @@ pub fn raise(p: &Program, native: &NativeProgram) -> Result<Io, ShaderError> {
             (loaded, &[][..], &[][..])
         }
         (StageIo::Ms(ms), HwStage::Ms) => {
-            let group = p.inputs.iter().find(|i| i.0 == Reg::V(5)).map(|i| i.1);
+            // The group input, and the phis that may carry it past a join.
+            let mut group: Vec<Value> = p
+                .inputs
+                .iter()
+                .filter(|i| i.0 == Reg::V(5))
+                .map(|i| i.1)
+                .collect();
+            // No lane is active over the EXEC-zero edge of s_cbranch_execz or
+            // _execnz, the same case as a partial-EXEC write below.
+            let no_lanes = |q: usize, b: usize| match (
+                p.blocks[q].insts.last().map(Inst::name),
+                p.blocks[q].exit,
+            ) {
+                (Some("s_cbranch_execz"), Exit::Branch { taken, not_taken }) => {
+                    taken == b && not_taken != b
+                }
+                (Some("s_cbranch_execnz"), Exit::Branch { taken, not_taken }) => {
+                    not_taken == b && taken != b
+                }
+                _ => false,
+            };
+            while let Some(v) = p
+                .blocks
+                .iter()
+                .enumerate()
+                .flat_map(|(b, k)| k.phis.iter().map(move |f| (b, f)))
+                .find_map(|(b, f)| {
+                    let mut args = f.args.iter().zip(&p.blocks[b].preds);
+                    let carried = args.any(|(a, &q)| group.contains(a) && !no_lanes(q, b));
+                    (carried && !group.contains(&f.value)).then_some(f.value)
+                })
+            {
+                group.push(v);
+            }
             // The group input holds the same value in every lane only as the
-            // first lane reads it; a VGPR write reads its old value too.
+            // first lane reads it. A write to v5 reads its old value too, which
+            // only lanes outside EXEC keep.
+            // shortcut: writes that may keep the old v5 in active lanes
+            // (v_fmac_f32's accumulator, a 16-bit half or d16 load,
+            // v_writelane_b32, v_movreld_b32, DPP that skips lanes) and
+            // partial-EXEC writes pass; check those too if a mesh program
+            // writes v5 that way.
             let per_lane = p.blocks.iter().flat_map(|b| &b.insts).find(|i| {
-                group.is_some_and(|g| i.reads.contains(&(Reg::V(5), g)))
+                i.read(Reg::V(5)).is_some_and(|v| group.contains(&v))
                     && i.name() != "v_readfirstlane_b32"
-                    && i.write(Reg::V(5)).is_none()
+                    && (i.write(Reg::V(5)).is_none() || operand_reads(p, i).contains(&Reg::V(5)))
             });
             if let Some(i) = per_lane {
                 return Err(unsupported(
@@ -301,28 +340,56 @@ pub fn raise(p: &Program, native: &NativeProgram) -> Result<Io, ShaderError> {
         },
         ..Io::default()
     };
-    // Only a second interpolation half needs to trace SSA definitions.
-    let mut halves = None;
+    let defs: std::collections::HashMap<Value, Site> = p
+        .blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(b, block)| {
+            block
+                .insts
+                .iter()
+                .enumerate()
+                .flat_map(move |(i, inst)| inst.writes.iter().map(move |w| (w.1, (b, i))))
+        })
+        .collect();
+    let phis: std::collections::HashMap<Value, (usize, usize)> = p
+        .blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(b, block)| {
+            block
+                .phis
+                .iter()
+                .enumerate()
+                .map(move |(i, phi)| (phi.value, (b, i)))
+        })
+        .collect();
+    let halves = Halves {
+        p,
+        defs: &defs,
+        phis: &phis,
+    };
+    let mut first_halves = Vec::new();
     for (b, block) in p.blocks.iter().enumerate() {
         for (i, inst) in block.insts.iter().enumerate() {
             let site = (b, i);
             let at = inst.machine.offset;
+            let name = inst.name();
             match &inst.fields {
                 Fields::Vintrp { dst, src, attr } => {
                     let attribute = attribute(inst, attr)?;
-                    match (inst.name(), *src) {
+                    match (name, *src) {
                         ("v_interp_mov_f32", Operand::Const(vertex)) => {
                             io.interps
                                 .push((site, Interp::Vertex { attribute, vertex }));
                         }
-                        ("v_interp_p1_f32", _) => {}
+                        ("v_interp_p1_f32", _) => first_halves.push((site, attribute)),
                         ("v_interp_p2_f32", Operand::Vector { reg, .. }) => {
                             let Operand::Vector { reg: d, .. } = *dst else {
                                 return Err(unsupported(at, "an interpolation operand"));
                             };
                             // The first half's result is this one's old dst.
                             let interp = halves
-                                .get_or_insert_with(|| Halves::new(p))
                                 .pair(
                                     attr,
                                     inst.read(Reg::V(d)),
@@ -335,25 +402,23 @@ pub fn raise(p: &Program, native: &NativeProgram) -> Result<Io, ShaderError> {
                         _ => return Err(unsupported(at, "an interpolation form")),
                     }
                 }
-                // Only interpolation has an attribute as a VALU source.
-                Fields::Valu(v) if matches!(v.src.first(), Some(Operand::Attr { .. })) => {
-                    match inst.name() {
-                        "v_interp_p1ll_f16" => {}
-                        "v_interp_p2_f16" => {
-                            let attribute = attribute(inst, &v.src[0])?;
-                            let read = |k: usize| match v.src.get(k) {
-                                Some(&Operand::Vector { reg, .. }) => inst.read(Reg::V(reg)),
-                                _ => None,
-                            };
-                            let interp = halves
-                                .get_or_insert_with(|| Halves::new(p))
-                                .pair(&v.src[0], read(2), read(1), &barycentric)
-                                .map_err(|what| unsupported(at, what))?;
-                            push_pair(&mut io, site, interp, attribute);
-                        }
-                        _ => return Err(unsupported(at, "an interpolation form")),
+                Fields::Valu(v) if name.starts_with("v_interp_") => match name {
+                    "v_interp_p1ll_f16" => {
+                        first_halves.push((site, attribute(inst, &v.src[0])?));
                     }
-                }
+                    "v_interp_p2_f16" => {
+                        let attribute = attribute(inst, &v.src[0])?;
+                        let read = |k: usize| match v.src.get(k) {
+                            Some(&Operand::Vector { reg, .. }) => inst.read(Reg::V(reg)),
+                            _ => None,
+                        };
+                        let interp = halves
+                            .pair(&v.src[0], read(2), read(1), &barycentric)
+                            .map_err(|what| unsupported(at, what))?;
+                        push_pair(&mut io, site, interp, attribute);
+                    }
+                    _ => return Err(unsupported(at, "an interpolation form")),
+                },
                 Fields::Exp {
                     target,
                     src,
@@ -398,93 +463,53 @@ pub fn raise(p: &Program, native: &NativeProgram) -> Result<Io, ShaderError> {
             }
         }
     }
-    first_halves_read(p, &mut io, halves.as_ref());
-    Ok(io)
-}
-
-/// A first half some other instruction reads too (the compiler keeps
-/// P0 + i P10 for more than its second half) evaluates on its own as well.
-fn first_halves_read(p: &Program, io: &mut Io, halves: Option<&Halves<'_>>) {
-    if !io
+    if first_halves.is_empty() {
+        return Ok(io);
+    }
+    // A loaded i/j pair normally becomes one host interpolation: its first
+    // half need not be evaluated. A first half also read as data (or used
+    // without a second half) must keep P0 + i * P10. Follow phi uses too,
+    // without forcing ordinary pairs to read per-vertex attributes.
+    let folded: std::collections::HashSet<_> = io
         .interps
         .iter()
-        .any(|(_, i)| matches!(i, Interp::Interpolated { .. }))
-    {
-        return;
-    }
-    let owned_phis;
-    let phis: &[Option<(usize, usize)>] = match halves {
-        Some(h) => &h.phis,
-        None => {
-            let mut v = vec![None; p.value_count()];
-            for (b, block) in p.blocks.iter().enumerate() {
-                for (i, phi) in block.phis.iter().enumerate() {
-                    v[phi.value.0 as usize] = Some((b, i));
-                }
-            }
-            owned_phis = v;
-            &owned_phis
-        }
-    };
-    // What instructions other than second halves read, and through phis.
-    let mut read = vec![false; phis.len()];
-    let mut work: Vec<Value> = Vec::new();
-    for block in &p.blocks {
-        for inst in &block.insts {
-            if inst.name().starts_with("v_interp_p2") {
-                continue;
-            }
-            for &(_, v) in &inst.reads {
-                let idx = v.0 as usize;
-                if !read[idx] {
-                    read[idx] = true;
-                    if phis[idx].is_some() {
-                        work.push(v);
-                    }
-                }
+        .filter_map(|(s, i)| matches!(i, Interp::Interpolated { .. }).then_some(*s))
+        .collect();
+    let mut used: std::collections::HashSet<_> = p
+        .blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(b, blk)| {
+            blk.insts
+                .iter()
+                .enumerate()
+                .map(move |(i, inst)| ((b, i), inst))
+        })
+        .filter(|(s, _)| !folded.contains(s))
+        .flat_map(|(_, inst)| inst.reads.iter().map(|r| r.1))
+        .collect();
+    loop {
+        let before = used.len();
+        for phi in p.blocks.iter().flat_map(|b| &b.phis) {
+            if used.contains(&phi.value) {
+                used.extend(&phi.args);
             }
         }
-    }
-    while let Some(v) = work.pop() {
-        if let Some((b, i)) = phis[v.0 as usize] {
-            for &a in &p.blocks[b].phis[i].args {
-                let idx = a.0 as usize;
-                if !read[idx] {
-                    read[idx] = true;
-                    if phis[idx].is_some() {
-                        work.push(a);
-                    }
-                }
-            }
+        if used.len() == before {
+            break;
         }
     }
-    let mut more = Vec::new();
-    for (_, interp) in &io.interps {
-        let Interp::Interpolated {
-            attribute, first, ..
-        } = interp
-        else {
-            continue;
-        };
-        for &(b, i) in first {
-            let known = |all: &[(Site, Interp)]| all.iter().any(|(s, _)| *s == (b, i));
-            if p.blocks[b].insts[i]
+    for (site, attribute) in first_halves {
+        if !io.interps.iter().any(|(s, _)| *s == site)
+            && p.blocks[site.0].insts[site.1]
                 .writes
                 .iter()
-                .any(|w| read[w.1.0 as usize])
-                && !known(&io.interps)
-                && !known(&more)
-            {
-                more.push((
-                    (b, i),
-                    Interp::Weighted {
-                        attribute: *attribute,
-                    },
-                ));
-            }
+                .any(|w| used.contains(&w.1))
+        {
+            io.interps.push((site, Interp::Weighted { attribute }));
         }
     }
-    io.interps.extend(more);
+    Ok(io)
 }
 
 /// The pixel input VGPRs that `addr` enables, with their meaning.
@@ -543,28 +568,11 @@ fn push_pair(io: &mut Io, site: Site, pair: Pair, attribute: Attribute) {
 /// Finds the first halves of interpolations.
 struct Halves<'a> {
     p: &'a Program,
-    defs: Vec<Option<Site>>,
-    phis: Vec<Option<(usize, usize)>>,
+    defs: &'a std::collections::HashMap<Value, Site>,
+    phis: &'a std::collections::HashMap<Value, (usize, usize)>,
 }
 
-impl<'a> Halves<'a> {
-    fn new(p: &'a Program) -> Self {
-        let n = p.value_count();
-        let mut defs = vec![None; n];
-        let mut phis = vec![None; n];
-        for (b, block) in p.blocks.iter().enumerate() {
-            for (i, phi) in block.phis.iter().enumerate() {
-                phis[phi.value.0 as usize] = Some((b, i));
-            }
-            for (i, inst) in block.insts.iter().enumerate() {
-                for &(_, w) in &inst.writes {
-                    defs[w.0 as usize] = Some((b, i));
-                }
-            }
-        }
-        Self { p, defs, phis }
-    }
-
+impl Halves<'_> {
     /// The interpolation whose second half reads the first half's result
     /// `acc`, the barycentric `j`, and attribute `attr`: every first half
     /// must read the same attribute channel. With j and every first half's
@@ -622,13 +630,15 @@ impl<'a> Halves<'a> {
         seen: &mut Vec<Value>,
         out: &mut Vec<Site>,
     ) -> Result<(), &'static str> {
-        if let Some(site) = self.defs[v.0 as usize] {
+        if let Some(&site) = self.defs.get(&v) {
             if !out.contains(&site) {
                 out.push(site);
             }
             return Ok(());
         }
-        let (b, i) = self.phis[v.0 as usize]
+        let &(b, i) = self
+            .phis
+            .get(&v)
             .ok_or("an interpolation without its first half")?;
         if !seen.contains(&v) {
             seen.push(v);
@@ -765,86 +775,47 @@ mod tests {
     }
 
     #[test]
-    fn interpolation_can_take_its_first_half_from_either_branch() {
+    fn first_halves_read_through_a_phi_keep_their_partial_values() {
         let p = program(&[
-            0xBF84_0003, // s_cbranch_scc0 to the second branch
+            0xBF06_8000, // s_cmp_eq_u32 s0, 0
+            0xBF85_0002, // s_cbranch_scc1 -> second first half
             0xC808_0000, // v_interp_p1_f32 v2, v0, attr0.x
-            0xC80C_0000, // v_interp_p1_f32 v3, v0, attr0.x
-            0xBF82_0002, // s_branch to the paired p2 instructions
+            0xBF82_0001, // s_branch -> export
             0xC808_0000, // v_interp_p1_f32 v2, v0, attr0.x
-            0xC80C_0000, // v_interp_p1_f32 v3, v0, attr0.x
-            0xC809_0001, // v_interp_p2_f32 v2, v1, attr0.x
-            0xC80D_0001, // v_interp_p2_f32 v3, v1, attr0.x
+            0xF800_180F,
+            0x0202_0202, // exp mrt0, v2, v2, v2, v2 done vm
             S_ENDPGM,
         ]);
         let io = raise(&p, &pixel(vec![TEXCOORD], 2)).unwrap();
         assert_eq!(io.interps.len(), 2);
-        for (i, (site, interp)) in io.interps.iter().enumerate() {
-            assert_eq!(*site, (3, i));
-            let Interp::Interpolated { first, .. } = interp else {
-                panic!("{interp:?}");
-            };
-            assert_eq!(first, &[(1, i), (2, i)]);
-        }
-    }
-
-    #[test]
-    fn vertex_sample_needs_no_second_half() {
-        let p = program(&[0xC80A_0002, S_ENDPGM]); // v_interp_mov_f32 v2, p0, attr0.x
-        let io = raise(&p, &pixel(vec![TEXCOORD], 0)).unwrap();
-        assert_eq!(
-            io.interps,
-            [(
-                (0, 0),
-                Interp::Vertex {
-                    attribute: Attribute {
-                        usage: Usage::Generic,
-                        row: 1,
-                        channel: 0,
-                        high: false,
-                    },
-                    vertex: 2,
-                },
-            )]
+        assert!(
+            io.interps
+                .iter()
+                .all(|(_, i)| matches!(i, Interp::Weighted { .. }))
         );
     }
 
     #[test]
-    fn packed_interpolation_and_unsupported_form() {
+    fn a_standalone_f16_first_half_is_weighted() {
         let p = program(&[
             0xD742_0002,
-            0x0002_0100, // v_interp_p1ll_f16 v2, attr0.x high, v0
-            0xD75A_0002,
-            0x040A_0300, // v_interp_p2_f16 v2, attr0.x high, v1, v2
+            0x0002_0000, // v_interp_p1ll_f16 v2, v0, attr0.x
+            0xF800_180F,
+            0x0202_0202,
             S_ENDPGM,
         ]);
-        let native = pixel(vec![TEXCOORD], 2);
-        let io = raise(&p, &native).unwrap();
-        assert_eq!(
-            io.interps,
-            [(
-                (0, 1),
-                Interp::Interpolated {
-                    attribute: Attribute {
-                        usage: Usage::Generic,
-                        row: 1,
-                        channel: 0,
-                        high: true,
-                    },
-                    barycentric: Barycentric::PerspectiveCenter,
-                    first: vec![(0, 0)],
-                },
-            )]
-        );
-
-        let p = program(&[0xD743_0002, 0x0402_0000, S_ENDPGM]); // v_interp_p1lv_f16
-        assert_eq!(
-            raise(&p, &native),
-            Err(ShaderError::Unsupported {
-                offset: 0,
-                what: "an interpolation form",
-            })
-        );
+        let io = raise(
+            &p,
+            &pixel(
+                vec![PsInput {
+                    fp16: true,
+                    ..TEXCOORD
+                }],
+                2,
+            ),
+        )
+        .unwrap();
+        assert!(matches!(&io.interps[..], [(_, Interp::Weighted { .. })]));
     }
 
     #[test]
@@ -882,6 +853,41 @@ mod tests {
         assert_eq!(io.exports[0].target, Target::Primitive);
         // The group input is uniform only as the first lane reads it.
         assert!(mesh(&[0x7E02_0305, S_ENDPGM]).is_err()); // v_mov_b32 v1, v5
+        // Also as an operand of a write to v5, or after a join.
+        let per_lane: [&[u32]; 5] = [
+            &[0x4A0A_0305, S_ENDPGM],              // v_add_nc_u32 v5, v5, v1
+            &[0x7E0A_0D05, S_ENDPGM],              // v_cvt_f32_u32 v5, v5
+            &[0xDC30_8000, 0x0500_0005, S_ENDPGM], // global_load_dword v5, v5, s[0:1]
+            &[0x7E0A_CB01, S_ENDPGM],              // v_swap_b32 v5, v1
+            &[
+                0xBF06_8001, // s_cmp_eq_u32 s1, 0
+                0xBF85_0001, // s_cbranch_scc1 -> 0xc
+                0x7E0A_0280, // v_mov_b32 v5, 0
+                0x7E02_0305, // 0xc: v_mov_b32 v1, v5
+                S_ENDPGM,
+            ],
+        ];
+        let accepted: Vec<_> = per_lane.iter().filter(|w| mesh(w).is_ok()).collect();
+        assert!(accepted.is_empty(), "accepted: {accepted:08X?}");
+        // Overwriting v5 reads the group input only for lanes outside EXEC:
+        // v_mov_b32 v5, 0; v_mov_b32 v1, v5.
+        assert!(mesh(&[0x7E0A_0280, 0x7E02_0305, S_ENDPGM]).is_ok());
+        // Skipping that write with s_cbranch_execz is the same case: under the
+        // same mask, the read sees only the 0.
+        let reuse = [
+            0x7E04_0505, // v_readfirstlane_b32 s2, v5
+            0x7D88_0084, // v_cmp_gt_u32 vcc, 4, v0
+            0xBE86_246A, // s_and_saveexec_b64 s[6:7], vcc
+            0xBF88_0001, // s_cbranch_execz -> 0x14
+            0x7E0A_0280, // v_mov_b32 v5, 0
+            0x88FE_067E, // 0x14: s_or_b64 exec, exec, s[6:7]
+            0xBE86_246A, // s_and_saveexec_b64 s[6:7], vcc
+            0xBF88_0001, // s_cbranch_execz -> 0x24
+            0x7E02_0305, // v_mov_b32 v1, v5
+            0x88FE_067E, // 0x24: s_or_b64 exec, exec, s[6:7]
+            S_ENDPGM,
+        ];
+        assert_eq!(mesh(&reuse).map(|_| ()), Ok(()));
     }
 
     #[test]
@@ -909,62 +915,5 @@ mod tests {
                 (3, Input::Position(1)),
             ]
         );
-    }
-
-    #[test]
-    #[ignore = "benchmark"]
-    fn bench_raise_io() {
-        use std::hint::black_box;
-        use std::time::Instant;
-
-        let compute = NativeProgram {
-            stage: HwStage::Cs,
-            io: StageIo::Cs(crate::native::ComputeIo {
-                rsrc2: 0,
-                threads: [32, 1, 1],
-            }),
-            ..pixel(vec![], 0)
-        };
-        let pixel = pixel(vec![TEXCOORD], 2);
-        for (label, native, prefix, suffix) in [
-            ("compute", &compute, &[][..], &[][..]),
-            (
-                "pixel vertex sample",
-                &pixel,
-                &[0xC80A_0002][..],
-                &[0xF800_0801, 2][..],
-            ),
-            (
-                "pixel interpolation pair",
-                &pixel,
-                &[0xC808_0000, 0xC809_0001][..],
-                &[0xF800_0801, 2][..],
-            ),
-        ] {
-            for instructions in [64, 512, 4096] {
-                let mut words = prefix.to_vec();
-                // Mix vector and scalar ALU writes without disturbing v0-v2.
-                words.extend(
-                    [0x0606_0703, 0x0608_0904, 0x8000_8100, 0x060A_0B05].repeat(instructions / 4),
-                );
-                words.extend_from_slice(suffix);
-                words.push(S_ENDPGM);
-                let p = program(&words);
-                let iterations = 2_000_000 / instructions;
-                let mut samples = [0.; 7];
-                for sample in &mut samples {
-                    let start = Instant::now();
-                    for _ in 0..iterations {
-                        black_box(raise(black_box(&p), black_box(native)).unwrap());
-                    }
-                    *sample = start.elapsed().as_secs_f64() * 1e9 / iterations as f64;
-                }
-                samples.sort_by(f64::total_cmp);
-                println!(
-                    "{label:24} {instructions:4} ALU instructions: {:>10.1} ns/raise",
-                    samples[3]
-                );
-            }
-        }
     }
 }

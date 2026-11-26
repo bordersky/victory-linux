@@ -45,9 +45,8 @@
 
 # Typical game data (non-exhaustive on purpose; the policy check is an allowlist)
 *.bin
-# The BCPack format's constant tables are not stored here (docs/asset-policy.md):
-# linux/fetch-tables.sh puts them in place before a build.
-/crates/victory-formats/src/bcpack-tables.bin
+# The one exception (docs/asset-policy.md): the BCPack format's constant tables.
+!/crates/victory-formats/src/bcpack-tables.bin
 *.dat
 *.pak
 *.rpf

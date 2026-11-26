@@ -1,23 +1,34 @@
 #!/usr/bin/env bash
 # Runs the runtime under Wine on Linux.
-#   linux/run.sh /path/to/your/dump/<title>.exe
+#   linux/run.sh /path/to/your/dump/<title>.exe          the world as play.ps1 runs it
+#   linux/run.sh /path/to/your/dump/<title>.exe --rt     with the ray-tracing structure builder
 #
 # Setup (once):
 #   - a Proton build's Wine, e.g. GE-Proton (VICTORY_PROTON=<its folder>,
 #     default ~/.steam/root/compatibilitytools.d/GE-Proton10-34)
-#   - the prefix (VICTORY_PREFIX, default ~/.local/share/victory-linux/prefix)
-#     is made on the first run, with that Proton's vkd3d-proton (d3d12,
-#     d3d12core) and DXVK (dxgi) in it
+#   - a wineserver that keeps mapped views in a tree (VICTORY_WINESERVER=<path>):
+#     stock Wine spends seconds a frame there (Wine bug 60868, CachyOS/wine-cachyos#50);
+#     build that server from the same Wine version's source, see README.md
+#   - vkd3d-proton master for the ray-traced passes (VICTORY_VKD3D=<folder holding
+#     d3d12.dll and d3d12core.dll>): released ones' dxil-spirv overflows its stack on
+#     some of the title's compute shaders and those pipelines never arrive
+#   - Microsoft's d3dcompiler_47.dll in the prefix (winetricks d3dcompiler_47): without
+#     it the layer's own shaders do not compile and the cinematics are black
+#   - the prefix (VICTORY_PREFIX, default ~/.local/share/victory-linux/prefix) is
+#     made on the first run, with that Proton's vkd3d-proton and DXVK (dxgi) in it
 #   - the executable from linux/build.sh (VICTORY_EXE to use another one)
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 DATA="${VICTORY_HOME:-$HOME/.local/share/victory-linux}"
 P="${VICTORY_PROTON:-$HOME/.steam/root/compatibilitytools.d/GE-Proton10-34}/files"
-EXE="${VICTORY_EXE:-$HERE/target/x86_64-pc-windows-gnu/release/victory.exe}"
+EXE="${VICTORY_EXE:-$HERE/target/x86_64-pc-windows-gnu/diag/victory.exe}"
+RT=0; ARGS=()
+for a in "$@"; do [ "$a" = --rt ] && RT=1 || ARGS+=("$a"); done
+set -- "${ARGS[@]}"
 [ -x "$P/bin/wine" ] || { echo "no Wine at $P/bin/wine (set VICTORY_PROTON)" >&2; exit 1; }
 [ -f "$EXE" ] || { echo "no $EXE (run linux/build.sh, or set VICTORY_EXE)" >&2; exit 1; }
-[ -n "${1:-}" ] || { echo "usage: linux/run.sh /path/to/<title>.exe" >&2; exit 1; }
-mkdir -p "$DATA"/{cache/vkd3d,data,logs}
+[ -n "${1:-}" ] || { echo "usage: linux/run.sh /path/to/<title>.exe [--rt]" >&2; exit 1; }
+mkdir -p "$DATA"/{cache/vkd3d,data,logs,saves-backup}
 export PATH="$P/bin:$PATH" WINESERVER="$P/bin/wineserver" WINELOADER="$P/bin/wine" WINEDLLPATH="$P/lib/wine"
 export WINEPREFIX="${VICTORY_PREFIX:-$DATA/prefix}"
 export WINEDEBUG="${WINEDEBUG:-err+all,fixme-all}"
@@ -30,24 +41,41 @@ if [ ! -f "$WINEPREFIX/system.reg" ]; then
   "$P/bin/wineserver" -w
 fi
 S32="$WINEPREFIX/drive_c/windows/system32"
+[ -f "$S32/d3dcompiler_47.dll" ] && [ "$(stat -c %s "$S32/d3dcompiler_47.dll")" -gt 3000000 ] \
+  || echo "warning: no Microsoft d3dcompiler_47.dll in the prefix (winetricks d3dcompiler_47): black cinematics" >&2
 for f in vkd3d-proton/x86_64-windows/d3d12.dll vkd3d-proton/x86_64-windows/d3d12core.dll dxvk/x86_64-windows/dxgi.dll; do
-  [ -f "$P/lib/wine/$f" ] && cmp -s "$P/lib/wine/$f" "$S32/$(basename "$f")" || cp -f "$P/lib/wine/$f" "$S32/" 2>/dev/null
+  src="$P/lib/wine/$f"
+  [ -n "${VICTORY_VKD3D:-}" ] && [ "${f%%/*}" = vkd3d-proton ] && src="$VICTORY_VKD3D/$(basename "$f")"
+  [ -f "$src" ] && { cmp -s "$src" "$S32/$(basename "$f")" || cp -f "$src" "$S32/"; }
 done
+[ -z "${VICTORY_VKD3D:-}" ] && [ "$RT" = 1 ] && echo "warning: --rt without VICTORY_VKD3D (vkd3d-proton master): ray-tracing pipelines may never arrive" >&2
+# The patched wineserver, started first: the title's processes join the server that owns the prefix.
+if [ -n "${VICTORY_WINESERVER:-}" ]; then
+  pgrep -f "$VICTORY_WINESERVER" >/dev/null || { "$P/bin/wineserver" -k 2>/dev/null; "$VICTORY_WINESERVER" -p10; }
+else
+  echo "warning: stock wineserver (set VICTORY_WINESERVER): expect seconds a frame" >&2
+fi
 w() { "$P/bin/wine" winepath -w "$1" 2>/dev/null; }
 export VICTORY_CACHE_DIR="$(w "$DATA/cache")" VICTORY_DATA_DIR="$(w "$DATA/data")"
 # vkd3d-proton otherwise keeps its pipeline cache in the working directory:
-# launched from elsewhere, a run starts cold (and a slow compile during the
-# world's load can get a pipeline left out).
+# launched from elsewhere, a run starts cold.
 export VKD3D_SHADER_CACHE_PATH="${VKD3D_SHADER_CACHE_PATH:-$(w "$DATA/cache/vkd3d")}"
-# Defaults that make the world run under Wine (each can be overridden):
-# the title's memory is copied (read in place, the intro stays black),
-export VICTORY_COPY_MEMORY="${VICTORY_COPY_MEMORY-1}"
-# no sparse copies (their tile binds made the card reset on RADV),
-export VICTORY_SPARSE="${VICTORY_SPARSE-0}"
-# room for card buffers (at 2 GiB they filled up and characters lost their skin),
-export VICTORY_CARD_BUFFERS_MB="${VICTORY_CARD_BUFFERS_MB-4096}"
-export VICTORY_HAIR="${VICTORY_HAIR-1}" VICTORY_FPS="${VICTORY_FPS-0}"
-export VICTORY_ASYNC_SUBMIT="${VICTORY_ASYNC_SUBMIT-1}"
+# scripts/play.ps1's settings (each can be overridden from the environment).
+d() { export "$1=${!1-$2}"; }
+d VICTORY_TEXTURE_NO_WAIT 1; d VICTORY_WIDE_BACK 1; d VICTORY_CARD_REHASH_RUNS 1; d VICTORY_JOIN_COPIES 1
+d VICTORY_INDIRECT_WINDOW 1; d VICTORY_RELAY_COPY 1; d VICTORY_INDIRECT_BATCH 2; d VICTORY_MAP_THREADS 1
+d VICTORY_TITLE_PRIORITIES 0; d VICTORY_CARD_AWAKE 1; d VICTORY_SHOW_AFTER 1; d VICTORY_AMBIENT 0.8
+d VICTORY_D3D12_DRED light; d VICTORY_SKIP_PIPELINES none; d VICTORY_THIN 1; d VICTORY_JOIN_PARTS 8; d VICTORY_UPLOAD_AHEAD 1
+# Under vkd3d-proton: relay stage 2 and card steps hand back wrong skinned meshes (faces gone),
+# and the land echo breaks head skin under Wine (avatarmanz/VIctory-7900XTX#13, #59).
+d VICTORY_RELAY 1; d VICTORY_CARD_STEPS 0; d VICTORY_LAND_ECHO 0
+[ "$RT" = 1 ] && export VICTORY_BVH_BUILDER=1
+# The title's saves, copied at each start (the last 5 kept): a run killed while the title
+# writes its checkpoint can leave one that loads characters without faces.
+if [ -n "$(ls -A "$DATA/data" 2>/dev/null)" ]; then
+  cp -a "$DATA/data" "$DATA/saves-backup/$(date +%Y%m%d-%H%M%S)"
+  ls -1d "$DATA/saves-backup/"*/ 2>/dev/null | head -n -5 | xargs -r rm -rf
+fi
 LOG="$DATA/logs/$(date +%Y%m%d-%H%M%S).log"
 echo "log: $LOG"
 "$P/bin/wine" "$EXE" run "$(w "$1")" --execute 2> >(tee "$LOG" >&2)

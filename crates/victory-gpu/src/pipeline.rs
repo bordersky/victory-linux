@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::mem::offset_of;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::object::{self, E_INVALIDARG, E_NOTIMPL, HRESULT, Iid, Object, PIPELINE, Table, This, guid};
+use crate::object::{self, E_INVALIDARG, HRESULT, Iid, Object, PIPELINE, Table, This, guid};
 use crate::resource::PAGEABLE_IIDS;
 
 const PIPELINE_IIDS: [Iid; 4] = [
@@ -61,75 +61,11 @@ pub(crate) struct Shader {
     /// The first 8 bytes of its BLAKE3, as logged.
     pub(crate) hash: String,
     container: Vec<u8>,
-    /// It animates or draws hair strands ([`hair_strands`]).
+    /// Its part in the stand-in for the indirect light.
     #[cfg(windows)]
-    #[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
-    hair: bool,
-    /// Its result gets the least indirect light ([`crate::ambient`]).
-    #[cfg(windows)]
-    pub(crate) resolves_light: bool,
+    pub(crate) ambient: Option<crate::ambient::Role>,
     #[cfg(windows)]
     translated: OnceLock<Option<Translated>>,
-}
-
-/// Whether a container's program is one of those that animate and draw hair
-/// strands, by its name. `VICTORY_HAIR` has them run.
-/// shortcut: left out, as some of them do not translate (an address from a
-/// phi) and the others draw lines all over the screen without them.
-#[cfg(windows)]
-fn hair_strands(container: &[u8]) -> bool {
-    static RUN: OnceLock<bool> = OnceLock::new();
-    const NAMES: [&[u8]; 18] = [
-        b"InterpolateStrand",
-        b"HairStrand",
-        b"CS_VisHair",
-        b"PS_Smh",
-        b"CS_InitSimBuffer",
-        b"CS_PreSkinSim",
-        b"CS_SolvePer",
-        b"CS_WavePerSpline",
-        b"CS_EstimateStartPosition",
-        b"CS_CachePrev",
-        b"CS_RestoreSimVelocity",
-        b"CS_UpdatePosePosition",
-        b"CS_GenerateAccessories",
-        b"CSGenerateHair",
-        b"CS_CalculateFireVolumes",
-        b"CS_ProjDecalCut",
-        b"CS_CullMaskPass",
-        b"CS_LodBlend",
-    ];
-    if *RUN.get_or_init(|| std::env::var_os("VICTORY_HAIR").is_some()) {
-        return false;
-    }
-    const END: &[u8] = b"_Wrapped";
-    container
-        .windows(END.len())
-        .enumerate()
-        .filter(|(_, w)| *w == END)
-        .any(|(at, _)| {
-            let before = &container[at.saturating_sub(100)..at];
-            let name = before
-                .rsplit(|b| !b.is_ascii_alphanumeric() && *b != b'_')
-                .next()
-                .unwrap_or_default();
-            NAMES.iter().any(|n| name.windows(n.len()).any(|w| w == *n))
-        })
-}
-
-impl Shader {
-    /// The program's name, if its container tells.
-    #[cfg(all(windows, feature = "diagnostics"))]
-    pub(crate) fn name(&self) -> String {
-        const END: &[u8] = b"_Wrapped";
-        let at = self.container.windows(END.len()).position(|w| w == END);
-        let before = &self.container[at.unwrap_or(0).saturating_sub(100)..at.unwrap_or(0)];
-        let name = before
-            .rsplit(|b| !b.is_ascii_alphanumeric() && *b != b'_')
-            .next()
-            .unwrap_or_default();
-        String::from_utf8_lossy(name).into_owned()
-    }
 }
 
 impl std::fmt::Debug for Shader {
@@ -141,55 +77,45 @@ impl std::fmt::Debug for Shader {
 /// Every container seen, by full content hash.
 static SHADERS: Mutex<Option<HashMap<[u8; 32], Arc<Shader>>>> = Mutex::new(None);
 
-/// `VICTORY_SHADER_SWAP=<folder>`: a container whose hash (16 digits, as
-/// logged) names a file `<hash>.dxbc` there is replaced by that file's
-/// container, of the same stage and root signature.
-/// shortcut: for the distant trees' wind variants (`VS_Octa*Wind*`), whose
-/// wind volumes nothing fills yet, so that they threw the trees' quads
-/// across the screen; their variants without wind stand in for them.
-fn swapped(hash: &str) -> Option<&'static [u8]> {
-    static SWAPS: OnceLock<HashMap<String, Vec<u8>>> = OnceLock::new();
-    SWAPS
-        .get_or_init(|| {
-            let mut swaps = HashMap::new();
-            let Some(folder) = std::env::var_os("VICTORY_SHADER_SWAP") else { return swaps };
-            for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|e| e == "dxbc")
-                    && let (Some(name), Ok(bytes)) = (path.file_stem().and_then(|n| n.to_str()), std::fs::read(&path))
-                {
-                    swaps.insert(name.to_owned(), bytes);
-                }
-            }
-            tracing::info!(count = swaps.len(), "shader containers replaced");
-            swaps
-        })
-        .get(hash)
-        .map(Vec::as_slice)
+/// For the memory lines: containers kept and their bytes, translations
+/// kept and the bytes of their host code. None of them is ever let go.
+static KEPT: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+
+/// What the shader table and the pipeline library keep in memory:
+/// containers and their bytes, translations and their bytes, the bytes of
+/// the library's file (kept whole while the library lives) and what its
+/// last save wrote.
+#[cfg(windows)]
+#[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
+pub(crate) fn kept() -> [u64; 7] {
+    use std::sync::atomic::Ordering::Relaxed;
+    [
+        KEPT[0].load(Relaxed),
+        KEPT[1].load(Relaxed),
+        KEPT[2].load(Relaxed),
+        KEPT[3].load(Relaxed),
+        library::BLOB.load(Relaxed),
+        library::SAVED.load(Relaxed),
+        library::TRIMMED_BYTES.load(Relaxed),
+    ]
 }
 
 /// The shared container for `bytes`.
 fn shader(stage: &'static str, bytes: &[u8]) -> Arc<Shader> {
     let full = blake3::hash(bytes);
-    let (bytes, full) = match swapped(&full.to_hex()[..16]) {
-        Some(other) => (other, blake3::hash(other)),
-        None => (bytes, full),
-    };
     let mut shaders = SHADERS.lock().unwrap_or_else(|e| e.into_inner());
     shaders
         .get_or_insert_with(HashMap::new)
         .entry(*full.as_bytes())
         .or_insert_with(|| {
+            KEPT[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            KEPT[1].fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
             Arc::new(Shader {
                 stage,
                 hash: full.to_hex()[..16].to_owned(),
                 container: bytes.to_vec(),
                 #[cfg(windows)]
-                hair: hair_strands(bytes),
-                #[cfg(windows)]
-                resolves_light: bytes
-                    .windows(crate::ambient::PROGRAM.len())
-                    .any(|w| w == crate::ambient::PROGRAM),
+                ambient: (stage == "compute").then(|| crate::ambient::role(bytes)).flatten(),
                 #[cfg(windows)]
                 translated: OnceLock::new(),
             })
@@ -201,12 +127,17 @@ fn shader(stage: &'static str, bytes: &[u8]) -> Arc<Shader> {
 #[cfg(windows)]
 pub(crate) struct Translated {
     pub(crate) host: victory_shader::emit::HostShader,
+    /// A compute program's threads in a group.
+    pub(crate) threads: Option<[u32; 3]>,
     pub(crate) used: Vec<victory_shader::UsedResource>,
-    /// Whether the shader indexes `ResourceDescriptorHeap[]` directly.
-    pub(crate) resource_heap: bool,
-    /// Whether the shader may write memory (buffer, image, or global stores
-    /// and atomics); `true` when its code is not known.
-    pub(crate) writes_memory: bool,
+    /// Whether the shader's code can store to buffer memory ([`stores`]);
+    /// true when its code is not known.
+    pub(crate) stores: bool,
+    /// Whether it can store through raw addresses ([`stores_by_address`]).
+    pub(crate) stores_by_address: bool,
+    /// Whether it stores through a view it picks from the heap by an index,
+    /// once asked (`crate::picked`).
+    pub(crate) picks: std::sync::atomic::AtomicU8,
 }
 
 #[cfg(windows)]
@@ -217,12 +148,20 @@ impl Shader {
         self.translated
             .get_or_init(|| {
                 let done = translate(&self.container);
-                #[cfg(feature = "diagnostics")]
-                if done.is_err()
-                    || std::env::var("VICTORY_SHADER_HASHES")
-                        .is_ok_and(|l| l.split(',').any(|h| h == self.hash))
-                {
-                    dump(self);
+                // `VICTORY_SHADER_SAVE=<dir>`: each shader as the title gave it (`.cdxil`) and as
+                // translated (`.dxil`), by the hash crash reports name it with
+                if let Some(dir) = std::env::var_os("VICTORY_SHADER_SAVE") {
+                    let dir = std::path::PathBuf::from(dir);
+                    let _ = std::fs::create_dir_all(&dir);
+                    let stem = format!("{}.{}", self.hash, self.stage);
+                    let _ = std::fs::write(dir.join(format!("{stem}.cdxil")), &self.container);
+                    if let Ok(t) = &done {
+                        let _ = std::fs::write(dir.join(format!("{stem}.dxil")), &t.host.dxil);
+                    }
+                }
+                if let Ok(t) = &done {
+                    KEPT[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    KEPT[3].fetch_add(t.host.dxil.len() as u64, std::sync::atomic::Ordering::Relaxed);
                 }
                 match &done {
                     Ok(t) => tracing::info!(
@@ -245,38 +184,35 @@ impl Shader {
     }
 }
 
-/// Diagnostics (`VICTORY_SHADER_DUMP=<dir>`, outside the repository): saves
-/// a shader that does not translate, for `victory translate`.
-#[cfg(all(windows, feature = "diagnostics"))]
-fn dump(shader: &Shader) {
-    let Some(dir) = std::env::var_os("VICTORY_SHADER_DUMP").map(std::path::PathBuf::from) else {
-        return;
-    };
-    let path = dir.join(format!("{}-{}.dxbc", shader.stage, shader.hash));
-    if let Err(error) = victory_core::ensure_outside_repo(&path) {
-        tracing::warn!(%error, "shader not saved");
-    } else if let Err(error) = std::fs::write(&path, &shader.container) {
-        tracing::warn!(%error, "shader not saved");
+#[cfg(windows)]
+impl Shader {
+    /// The console programs of the container; `None` if they are not known.
+    pub(crate) fn programs(&self) -> Option<Vec<victory_shader::NativeProgram>> {
+        use victory_shader::{Container, FourCC};
+        let c = Container::parse(&self.container).ok()?;
+        let part = c.part(FourCC::DXIL).or(c.part(FourCC::ACCC))?;
+        victory_shader::native_programs(part.data).ok()
     }
 }
 
 #[cfg(windows)]
 fn translate(container: &[u8]) -> Result<Translated, String> {
-    use victory_shader::{Container, FourCC, HwStage, RootType};
-    let target = crate::host::host().map_or(victory_shader::emit::Target::ANY, |h| h.target());
-    let host = crate::shader_cache::host_shader(container, target)?;
-    let dxil_heap = Container::parse(&host.dxil).is_ok_and(|c| {
-        c.part(FourCC::SFI0)
-            .and_then(|p| p.data.get(..8))
-            .is_some_and(|b| {
-                let flags = u64::from_le_bytes(b.try_into().unwrap_or_default());
-                flags & (1 << 32) != 0
-            })
-    });
+    use victory_shader::{Container, FourCC, HwStage};
+    // The translation depends on it (a view index past a capped heap).
+    crate::descriptor::host::probe_view_limit();
     let c = Container::parse(container).map_err(|e| e.to_string())?;
-    let programs = victory_shader::container_programs(&c).unwrap_or_default();
-    let writes_memory = programs.is_empty() || programs.iter().any(writes_memory);
-    let (used, native_heap) = programs
+    let programs = match c.part(FourCC::DXIL).or(c.part(FourCC::ACCC)) {
+        Some(part) => victory_shader::native_programs(part.data).map_err(|e| e.to_string())?,
+        None => Vec::new(),
+    };
+    let host = crate::shader_cache::host_shader(container)?;
+    let stores = programs.is_empty() || programs.iter().any(stores);
+    let threads = programs.iter().find_map(|p| match &p.io {
+        victory_shader::native::StageIo::Cs(cs) if cs.threads.iter().all(|&n| n > 0) => Some(cs.threads),
+        _ => None,
+    });
+    let stores_by_address = programs.is_empty() || programs.iter().any(stores_by_address);
+    let used = programs
         .into_iter()
         .find(|p| {
             matches!(
@@ -284,26 +220,152 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
                 HwStage::Vs | HwStage::Ps | HwStage::Ms | HwStage::Cs
             )
         })
-        .map(|p| {
-            let rh = p.layout.iter().any(|rp| rp.root == RootType::ResourceHeap)
-                || p.used.iter().any(|u| u.root == RootType::ResourceHeap);
-            (p.used, rh)
-        })
+        .map(|p| p.used)
         .unwrap_or_default();
     Ok(Translated {
         host,
+        threads,
         used,
-        resource_heap: dxil_heap || native_heap,
-        writes_memory,
+        stores,
+        stores_by_address,
+        picks: Default::default(),
     })
 }
 
-/// Whether a native program may write memory: it has a buffer, image,
-/// flat, or global store or atomic, or code that is not all known (an
-/// instruction outside our table, an indirect jump, or code that does not
-/// decode).
+/// The compute pipelines of the console's ray-tracing structure builder
+/// (`XboxBvhBuilder.dll`; its programs are the ones with a spilled
+/// user-data table) run **all or none**. Its stages feed each other
+/// through memory: a stage that runs on what a dropped stage never wrote
+/// computes its store offsets from garbage. The structures lie in plain
+/// title memory, between the title's own objects, and a root view has no
+/// size, so those stores land on the neighbours (run 98, with 14 of 35
+/// stages translated: the title died within a second of the first builder
+/// submission, on pointers that had become bounding-box bit patterns).
+///
+/// So a builder dispatch runs only while every builder pipeline the title
+/// has created has a host pipeline; the first builder dispatch makes them
+/// all on the spot instead of over the next frames (a stage "still being
+/// made" would be a dropped stage). While one cannot be made the builder
+/// is off; it is looked at again when the title creates another. A stage
+/// that could not be bound stops the stages after it for the rest of that
+/// frame and the next ([`builder_rests`]); it turned the builder off for the
+/// rest of the run at first.
+///
+/// shortcut: and only with `VICTORY_BVH_BUILDER=1`, until a run has shown
+/// the whole builder and the host side of title memory by address
+/// (`memory.rs`) working on a card; nothing reads the structures before
+/// the programs that walk them translate.
 #[cfg(windows)]
-fn writes_memory(program: &victory_shader::NativeProgram) -> bool {
+struct Builder {
+    pipelines: Vec<Arc<make::Pending>>,
+    /// Every one of `pipelines` has a host pipeline.
+    whole: bool,
+    /// One could not be made, of so many (0: none).
+    off: usize,
+    /// No stage runs before this frame.
+    rests: u64,
+}
+
+#[cfg(windows)]
+static BUILDER: Mutex<Builder> = Mutex::new(Builder {
+    pipelines: Vec::new(),
+    whole: false,
+    off: 0,
+    rests: 0,
+});
+
+/// Whether `shaders` are a pipeline of the structure builder.
+#[cfg(windows)]
+fn of_builder(shaders: &[Arc<Shader>]) -> bool {
+    use victory_shader::{Container, FourCC};
+    let [shader] = shaders else { return false };
+    if shader.stage != "compute" {
+        return false;
+    }
+    let Ok(c) = Container::parse(&shader.container) else {
+        return false;
+    };
+    c.part(FourCC::DXIL)
+        .and_then(|part| victory_shader::native_programs(part.data).ok())
+        .is_some_and(|programs| programs.iter().any(victory_shader::spill::is_spilled))
+}
+
+/// `VICTORY_BVH_QUARANTINE=1`: what the structure builder's stages store
+/// stays in the host's copies and is not copied back into title memory. A
+/// check for a first run of the whole builder: a stage that stores where
+/// it should not can then not reach the title's own objects (run 98), and
+/// the programs that walk the structures read the host's copies anyway.
+/// shortcut: not a way to run: the title also reads results back (sizes,
+/// counters) and gets none, and a copy's pages are overwritten from title
+/// memory when the title writes them.
+#[cfg(windows)]
+pub(crate) fn builder_quarantined(this: This) -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    is_builder(this) && *ON.get_or_init(|| std::env::var_os("VICTORY_BVH_QUARANTINE").is_some_and(|v| v == "1"))
+}
+
+/// Whether the title's pipeline `this` is one of the structure builder's.
+#[cfg(windows)]
+pub(crate) fn is_builder(this: This) -> bool {
+    !this.is_null() && pipeline(this).builder
+}
+
+/// A stage of the builder was dropped after all: none runs for the rest of
+/// this frame and the next (what it fed is not there).
+#[cfg(windows)]
+pub(crate) fn builder_rests(why: &'static str) {
+    let mut b = BUILDER.lock().unwrap_or_else(|e| e.into_inner());
+    b.rests = crate::frame::current() + 2;
+    static SAID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    if SAID.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 20 {
+        tracing::warn!(why, "the ray-tracing structure builder rests for this frame and the next: its stages run all or none");
+    }
+}
+
+/// At a dispatch of a builder pipeline: whether the builder runs (see
+/// [`Builder`]).
+#[cfg(windows)]
+pub(crate) fn builder_runs() -> bool {
+    static ALLOWED: OnceLock<bool> = OnceLock::new();
+    if !*ALLOWED.get_or_init(|| std::env::var_os("VICTORY_BVH_BUILDER").is_some_and(|v| v == "1")) {
+        return false;
+    }
+    let mut b = BUILDER.lock().unwrap_or_else(|e| e.into_inner());
+    if b.off == b.pipelines.len() || crate::frame::current() < b.rests {
+        return false;
+    }
+    if b.whole {
+        return true;
+    }
+    let missing: Vec<String> = b.pipelines.iter().filter(|p| !make::now(p)).map(|p| make::hashes(p)).collect();
+    if !missing.is_empty() {
+        b.off = b.pipelines.len();
+        tracing::warn!(
+            missing = missing.len(),
+            of = b.pipelines.len(),
+            which = ?missing,
+            "the ray-tracing structure builder stays off: not all of its programs have a host pipeline, and its stages run all or none"
+        );
+        return false;
+    }
+    b.off = 0;
+    tracing::info!(
+        pipelines = b.pipelines.len(),
+        "the ray-tracing structure builder runs: all of its programs have host pipelines"
+    );
+    b.whole = true;
+    true
+}
+
+/// Whether a console program can store to buffer memory: it has a buffer,
+/// typed-buffer, scalar-memory, flat or global store or atomic, or code
+/// that is not all known (an instruction of those kinds outside our table,
+/// an indirect jump, code that does not decode). Stores to textures
+/// (image instructions) and to the program's own scratch memory do not
+/// count: neither reaches a buffer's host copy. After upstream #413,
+/// which leaves scalar-memory stores out and counts image stores.
+#[cfg(windows)]
+fn stores(program: &victory_shader::NativeProgram) -> bool {
     use victory_shader::gfx10::{Encoding, decode};
     let Ok(code) = decode(&program.code) else {
         return true;
@@ -313,19 +375,32 @@ fn writes_memory(program: &victory_shader::NativeProgram) -> bool {
         match i.encoding {
             Encoding::Mubuf
             | Encoding::Mtbuf
-            | Encoding::Mimg
+            | Encoding::Smem
             | Encoding::Flat
-            | Encoding::Global => name.is_none_or(stores),
+            | Encoding::Global => name.is_none_or(|n| {
+                (n.contains("store") || n.contains("atomic")) && !n.contains("scratch")
+            }),
             Encoding::Sop1 => name.is_none_or(|n| matches!(n, "s_setpc_b64" | "s_swappc_b64")),
             _ => false,
         }
     })
 }
 
-/// Whether a memory instruction (by name) writes memory.
+/// Whether a console program can store to memory through raw addresses
+/// (`crate::memory`): a flat or global store or atomic, or code that does
+/// not decode. The programs that only walk ray-tracing structures do not,
+/// whatever they store through views.
 #[cfg(windows)]
-fn stores(name: &str) -> bool {
-    name.contains("store") || name.contains("atomic")
+fn stores_by_address(program: &victory_shader::NativeProgram) -> bool {
+    use victory_shader::gfx10::{Encoding, decode};
+    let Ok(code) = decode(&program.code) else {
+        return true;
+    };
+    code.iter().any(|i| {
+        matches!(i.encoding, Encoding::Flat | Encoding::Global)
+            && i.name()
+                .is_none_or(|n| (n.contains("store") || n.contains("atomic")) && !n.contains("scratch"))
+    })
 }
 
 #[repr(C)]
@@ -340,6 +415,9 @@ struct Pipeline {
     /// (by a worker: the title may release the pipeline meanwhile).
     #[cfg(windows)]
     host: Arc<make::Pending>,
+    /// One of the ray-tracing structure builder's ([`Builder`]).
+    #[cfg(windows)]
+    builder: bool,
 }
 const _: () = assert!(offset_of!(Pipeline, packet) == 0x10);
 
@@ -417,9 +495,12 @@ fn skipped_shader(p: &Pipeline) -> Option<&str> {
         let value = std::env::var("VICTORY_SKIP_PIPELINES").unwrap_or_default();
         parse_skip_hashes(&value)
     });
+    if hashes.is_empty() {
+        return None;
+    }
     p.shaders
         .iter()
-        .find(|shader| shader.hair || !hashes.is_empty() && hashes.contains(&shader.hash))
+        .find(|shader| hashes.contains(&shader.hash))
         .map(|shader| shader.hash.as_str())
 }
 
@@ -445,18 +526,10 @@ pub(crate) fn note_drop(this: This) {
     }
 }
 
-/// A title pipeline's shaders (diagnostics).
-#[cfg(all(windows, feature = "diagnostics"))]
-pub(crate) fn names(this: This) -> String {
-    if this.is_null() {
-        return "none".into();
-    }
-    pipeline(this).shaders.iter().map(|s| format!("{} {}", s.name(), s.hash)).collect()
-}
-
 /// Counts a draw or dispatch dropped for `why` (diagnostics).
 #[cfg(all(windows, feature = "diagnostics"))]
 pub(crate) fn note_why(why: String) {
+    crate::capture::op(0, || format!("DROPPED {why}"));
     let mut drops = DROPS.lock().unwrap_or_else(|e| e.into_inner());
     *drops.get_or_insert_with(HashMap::new).entry(why).or_default() += 1;
 }
@@ -493,12 +566,25 @@ fn hand_out(
     #[cfg(windows)]
     let host = Arc::new(make::Pending::new(shaders.clone(), graphics));
     #[cfg(windows)]
+    known::note(host.key(), &shaders, host.graphics.as_deref());
+    #[cfg(windows)]
     make::early(&host);
+    #[cfg(windows)]
+    let builder = of_builder(&shaders);
+    #[cfg(windows)]
+    if builder {
+        // Another stage: the group is looked at again at its next dispatch.
+        let mut b = BUILDER.lock().unwrap_or_else(|e| e.into_inner());
+        b.pipelines.push(host.clone());
+        b.whole = false;
+    }
     let pipeline = Box::new(Pipeline {
         object: Object::new(&FUNCTIONS),
         packet: [0; 8],
         #[cfg(windows)]
         host,
+        #[cfg(windows)]
+        builder,
         shaders,
         bound: std::sync::atomic::AtomicBool::new(false),
     });
@@ -538,25 +624,8 @@ pub(crate) extern "system" fn create_compute(
     let Some(desc) = (unsafe { desc.as_ref() }) else {
         return E_INVALIDARG;
     };
-    let shader = copy("compute", &desc.stage);
-    // A container of another compiler's code only (`ACCC`: the title's
-    // upscaler passes) does not run here: the title is told, and does
-    // without (`VICTORY_ACCC=1` takes them, their dispatches are dropped).
-    #[cfg(windows)]
-    if let Some(s) = &shader
-        && victory_shader::Container::parse(&s.container)
-            .is_ok_and(|c| c.part(victory_shader::FourCC::DXIL).is_none())
-        && std::env::var("VICTORY_ACCC").as_deref() == Ok("0")
-    {
-        tracing::warn!(hash = %s.hash, "a compute pipeline without DXIL is not made");
-        if !out.is_null() {
-            // SAFETY: the title's out pointer.
-            unsafe { *out = std::ptr::null() };
-        }
-        return E_NOTIMPL;
-    }
     hand_out(
-        shader.into_iter().collect(),
+        copy("compute", &desc.stage).into_iter().collect(),
         #[cfg(windows)]
         None,
         iid,
@@ -686,9 +755,25 @@ static FUNCTIONS: Table<24> = {
 #[cfg(windows)]
 pub(crate) mod host;
 #[cfg(windows)]
+pub mod known;
+#[cfg(windows)]
 mod library;
 #[cfg(windows)]
 mod make;
+
+/// Lets the pipeline library's mapped file go from memory when no pipeline
+/// has loaded for a while (`library::trim`); called by the host's sweep.
+#[cfg(windows)]
+pub(crate) fn trim_library() {
+    library::trim();
+}
+
+/// The pipeline library's part of the report when the host device is
+/// removed (`library::removal_note`).
+#[cfg(windows)]
+pub(crate) fn library_removal_note() -> String {
+    library::removal_note()
+}
 
 /// Keeps compiled host pipelines, and the list of title pipelines to start
 /// early, in `dir` (a folder of the cache) across runs.
@@ -822,6 +907,3 @@ mod tests {
         }
     }
 }
-
-#[cfg(all(test, windows))]
-mod depth_bounds_test;

@@ -14,7 +14,7 @@ pub const PROVIDER: Guid = Guid::new(
     [0xb9, 0x9c, 0x41, 0x78, 0xcc, 0x6b, 0x40, 0x9f],
 );
 
-/// The interface's older revision; an earlier table
+/// The interface as Minecraft (2022) asks for it; an older table
 /// ended before the device id.
 pub const IID: Guid = Guid::new(
     0x6fd7_1f09,
@@ -41,7 +41,7 @@ const DEVICE_ID: &str = "VkljdG9yeSBvZmZsaW5lIGRldmljZSBpZGVudGl0eSE=";
 pub static OBJECT: Object = Object::new("system", &VTABLE);
 pub static ANALYTICS_OBJECT: Object = Object::new("analytics", &ANALYTICS_VTABLE);
 
-/// The interface's newer revision; titles call the
+/// The interface as the title (2026) asks for it; it calls the
 /// same three slots (0x18, 0x20, 0x28) with the same arguments.
 pub const IID_2026: Guid = Guid::new(
     0x1861_cf2e,
