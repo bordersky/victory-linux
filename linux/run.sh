@@ -75,10 +75,9 @@ d VICTORY_FETCH_CHECK 1; d VICTORY_LAND_ECHO 0
 # shaders wrote instead of the CPU comparing it (~107 -> ~28 MB a frame on the CPU).
 d VICTORY_CARD_BUFFERS_MIN_MB 1; d VICTORY_CARD_BUFFERS_MB 4096
 # Renderer patch 1 (VICTORY_PORT_CONSTANTS=1) gives a black screen under vkd3d-proton: off.
-# Patch 2 on, with its fallback asked every frame and 128 pages a frame looked at: under Wine its
-# memcpy hook marks none of the ~250 view records a frame the fallback finds, and with the
-# defaults (every 8 frames, 16 pages) they stayed wrong for frames (stretched textures).
-d VICTORY_PORT_DESCRIPTORS 1; d VICTORY_PORT_DESCRIPTORS_EVERY 1; d VICTORY_PORT_DESCRIPTORS_CHECK 128
+# Patch 2 (VICTORY_PORT_DESCRIPTORS=1) off too: under Wine its memcpy hook marks none of the ~250
+# view records a frame its fallback finds, and textures stretch for a moment, also with the
+# fallback asked every frame over 128 pages.
 # The title pins its threads as if SMT siblings were numbered side by side (as Windows does);
 # Linux numbers them n and n+cores. Wine is shown them side by side (avatarmanz#129, zocram4cc).
 if [ -z "${WINE_CPU_TOPOLOGY+x}" ]; then
