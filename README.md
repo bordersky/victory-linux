@@ -33,7 +33,8 @@ Shader cache warm. The prologue's indoor scenes unless stated:
 | current tree, a lighter view of the same prison | ~4,300 | ~58 ms | ~17 |
 | previous tree (`9c23e8d`), outdoors (driving) | ~9,000-10,600 | 80-110 ms | 9-12 |
 | **current tree, `run.sh` defaults**, from a checkpoint | ~5,900-6,000 | 67-69 ms | ~15 |
-| same, with renderer patch 2 | ~2,700-4,000 (moving) | 55-63 ms; 50-55 ms preparing | 16-18 |
+| same, with renderer patch 2 (off by default: textures stretch) | ~2,700-4,000 (moving) | 55-63 ms; 50-55 ms preparing | 16-18 |
+| current tree, `--rt`, Series S profile (`--console series-s`) | ~5,000-6,500 | 80-120 ms (up to ~190 where the card is the limit) | 5-12.6 |
 | current tree, `--rt` | ~5,000-7,000 | 155-220 ms | 4.5-6.4 |
 
 The rows marked current are from avatarmanz's main at `9576c45` with this
@@ -79,7 +80,9 @@ credited otherwise.
 | Main characters without faces after resuming from a checkpoint | the head blend-shape map's compute pipeline was not made yet when the title dispatched it once; a wait for it (Beqren) fixes it. Unbounded, the wait held a frame past the title's ~30 s watchdog on a cold shader cache: a crash while loading (`+0x23cf683`) after every translator change; #166's bounded wait loads from a cold cache without it | carried here, [avatarmanz#166](https://github.com/avatarmanz/VIctory-7900XTX/pull/166) |
 | Every session started with no pipelines kept | vkd3d-proton refuses an empty pipeline library given as a non-null empty slice; #151 asks with a null blob. Here: 1,700 pipelines kept after the first run | carried here, [avatarmanz#151](https://github.com/avatarmanz/VIctory-7900XTX/pull/151) |
 | Faces torn while characters talk (mouths far too wide) | 16-bit integer typed loads after a group barrier read stale values on RADV; Beqren's raw-view read, taken only where the view's word says a 16-bit integer view of the loaded size. Without that check (a first port here) a poster's texture went wrong | carried here, Beqren's #129 and [avatarmanz#114](https://github.com/avatarmanz/VIctory-7900XTX/pull/114) |
-| Renderer patch 1 (`VICTORY_PORT_CONSTANTS=1`) | a black screen from the start screen on under vkd3d-proton; patch 2 works and is on in `run.sh` | here |
+| Renderer patch 1 (`VICTORY_PORT_CONSTANTS=1`) | a black screen from the start screen on under vkd3d-proton ([avatarmanz#163](https://github.com/avatarmanz/VIctory-7900XTX/issues/163)) | off |
+| Renderer patch 2 (`VICTORY_PORT_DESCRIPTORS=1`) | ~5 ms a frame less preparing, but textures stretch for a moment, more in the Series S profile. Its hook on the title's `memcpy`/`memmove` sees ~5,200 copies a frame into the view heap and marks none of their records; its fallback finds ~190-285 view records a frame late (written by Wine's `ucrtbase` `memcpy` for ~40 % of them, and by two places in the title's code) | off, open |
+| Ray tracing in the Series X profile | the card is the limit (83-89 % busy, the submitting thread waits ~110 ms a frame for it); the Series S profile's lower resolution gives 80-120 ms against 140-195 | `--console series-s` |
 | Head skin wrong under Wine | the land echo (Kayotic1337, #59) | `run.sh` defaults below |
 | No facial animation in play | fxceless/victory-fork#927 (tippythetaidum) merged with avatarmanz's partial fix (VIctory `4243a96a`): views in tables take #927's path, views picked from the heap keep `integer_view` | carried here, [#927 comment](https://github.com/fxceless/victory-fork/pull/927#issuecomment-7185216568) |
 | Seconds a frame with the GPU idle | stock wineserver keeps mapped views in a list (Wine bug 60868) | patched wineserver, below |
@@ -142,7 +145,6 @@ overridden from the environment):
 | `VICTORY_FETCH_CHECK=1` | without it relay stage 2 loses skinned meshes (faces) under vkd3d-proton: torn fetches, above |
 | `VICTORY_LAND_ECHO=0` | breaks head skin under Wine |
 | `VICTORY_CARD_BUFFERS_MIN_MB=1 VICTORY_CARD_BUFFERS_MB=4096` | title buffers of 1 MiB or more get a copy in the card's memory (up to 4 GiB), where the card finds what shaders wrote: ~107 -> ~28 MB a frame compared on the CPU, ~10 % a frame (without any such copies: 0.3-1.3 fps) |
-| `VICTORY_PORT_DESCRIPTORS=1` | upstream's renderer patch 2: the title's descriptor stores tell their slots, no scan of the heap each frame (~50-55 ms a frame preparing against ~58-60) |
 | `WINE_CPU_TOPOLOGY` (from `/sys`) | the title pins its threads as if SMT siblings were numbered side by side, as Windows numbers them; Linux numbers them `n` and `n+cores` (zocram4cc on avatarmanz#129); here about the same frame with ~15 % more draws |
 | `VICTORY_BVH_BUILDER=1` (`--rt`) | the title's ray-tracing structure builder |
 | `VKD3D_SHADER_CACHE_PATH` | otherwise vkd3d-proton keeps its cache in the working directory and runs start cold |
