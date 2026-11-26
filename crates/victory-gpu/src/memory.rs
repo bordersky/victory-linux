@@ -105,7 +105,21 @@ const BACK: u64 = 256 << 10;
 /// structure that is not right goes anywhere, and 2,048 a frame took all the
 /// pages there are in the first seconds (run light-4).
 const FAULTS: usize = 128;
+/// In all, by default; `VICTORY_FAULT_PAGES` sets it. With the ray-tracing
+/// builder the title's rays reached past 2,048 pages a few minutes in (a
+/// prison scene, 2026-11-26): what they touched after read 0 (a black
+/// locker, an outfit half drawn).
 const FAULTS_ALL: usize = 2048;
+
+fn faults_all() -> usize {
+    static ALL: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *ALL.get_or_init(|| {
+        std::env::var("VICTORY_FAULT_PAGES")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(FAULTS_ALL)
+    })
+}
 /// Frames over which every page is looked at once.
 const SWEEP: usize = 128;
 
@@ -676,7 +690,7 @@ impl Memory {
         pages.sort_unstable();
         let mut made = 0;
         for &page in &pages {
-            if made < FAULTS && self.faulted < FAULTS_ALL && self.copy_of(page).is_none() && self.map(page) {
+            if made < FAULTS && self.faulted < faults_all() && self.copy_of(page).is_none() && self.map(page) {
                 made += 1;
                 self.faulted += 1;
                 self.bring(page, page + 1);

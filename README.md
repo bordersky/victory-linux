@@ -6,8 +6,9 @@ and the measurements behind each choice.
 
 It now starts from [avatarmanz/VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX)
 (itself a fork of [fxceless/victory-fork](https://github.com/fxceless/victory-fork)),
-the fastest tree measured here: `b0cfe2b` first, now its main at `9c23e8d`, with
-fxceless/victory-fork#927 (facial animation) on top. Until 2026-11-26 it was built on
+the fastest tree measured here: `b0cfe2b` first, then `9c23e8d`, now its main at
+`9576c45`, with fxceless/victory-fork#927 (facial animation) and pull requests
+#166, #151 and #114 of that repository on top. Until 2026-11-26 it was built on
 [Belobug's AMD fork](https://github.com/Belobug/VIctory-Belobug-AMD); that
 state is in the history (`51a3912`). See [CREDITS.md](CREDITS.md) for where
 each change comes from.
@@ -30,11 +31,16 @@ Shader cache warm. The prologue's indoor scenes unless stated:
 | this base, ray tracing with the structure builder (`--rt`) | ~6,800-7,000 | 148-152 ms | ~6.7 |
 | **current tree, `run.sh` defaults** (relay stage 2 with the fetch check) | ~6,800 | 65-67 ms | ~15 |
 | current tree, a lighter view of the same prison | ~4,300 | ~58 ms | ~17 |
-| current tree, outdoors (driving) | ~9,000-10,600 | 80-110 ms | 9-12 |
+| previous tree (`9c23e8d`), outdoors (driving) | ~9,000-10,600 | 80-110 ms | 9-12 |
+| **current tree, `run.sh` defaults**, from a checkpoint | ~5,900-6,000 | 67-69 ms | ~15 |
+| same, with renderer patch 2 | ~2,700-4,000 (moving) | 55-63 ms; 50-55 ms preparing | 16-18 |
+| current tree, `--rt` | ~5,000-7,000 | 155-220 ms | 4.5-6.4 |
 
-The current rows are from avatarmanz's main at `9c23e8d` with this repository's
-source changes and #927, `linux/build.sh release`, and `run.sh`'s settings, in a
-new game. On the first row's spot, relay stage 1 gives ~82 ms at ~6,650 draws in
+The rows marked current are from avatarmanz's main at `9576c45` with this
+repository's changes (`linux/build.sh release`, `run.sh`'s settings), resuming
+the same checkpoint in the prologue; the 15 fps row and the patch row were not
+taken at exactly the same spot (the player moved). The rows above them are
+from `9c23e8d`, in a new game. On the first row's spot, relay stage 1 gives ~82 ms at ~6,650 draws in
 the same build: with stage 2 the submitting thread no longer waits for the card
 (~27-31 ms a frame before). The frame is CPU-bound here: the card is about
 55-60 % busy, and it waits ~25-30 ms a frame for the thread that prepares
@@ -44,17 +50,18 @@ With `--rt` the title's own ray-traced light runs: bounce light, sun and lamp
 shadows; without it rooms that the sun does not reach are lit by a constant
 ambient instead.
 
-In a new game, characters keep their faces and skin with the settings below,
-and with #927 their faces animate in play (before, only cutscenes did). Open:
-- **Resuming from a checkpoint** loses the main characters' faces: with relay
-  stage 1, and still with stage 2 and the fetch check.
-- **One main character's mouth** opens far too wide when she talks. It is also
-  reported on an RX 7900 XT on #927.
-- **Outdoors**, some faces and textures blink or stretch for a moment, with the
-  card's memory nearly full.
+Characters keep their faces and skin, also when resuming from a checkpoint
+(#166), and their faces animate in play without tearing (#927, #114 and the raw
+typed loads). Open:
+- **Two lockers** draw black: their chipped paint and numbers are there, the
+  base colour is not. Not the card-buffer copies (black with them off too).
+- **With `--rt`**, the inmates' outfits look glossy, as if their reflections
+  were wrong, and the frame is 155-220 ms.
+- **Outdoors** (on `9c23e8d`), some faces and textures blinked or stretched for
+  a moment, with the card's memory nearly full; not checked on this tree yet.
 - **Two crashes** in the title's code reading address 0
-  (`+0x1884fb`, `+0x4e9b578`), with relay stage 2, one of them while driving.
-- A locker with a black texture, and other minor glitches.
+  (`+0x1884fb`, `+0x4e9b578`) with relay stage 2 on `9c23e8d`, one of them
+  while driving; not seen on this tree yet.
 
 ## What this project adds
 
@@ -69,7 +76,10 @@ credited otherwise.
 | The ray-tracing builder needs a global shortcut (`VICTORY_FIRSTLANE_OWN=1`) | no program of the title's shader archive needs it (all 26,084 translate without it); taken by default in the builder's programs only | here, [avatarmanz#101](https://github.com/avatarmanz/VIctory-7900XTX/issues/101#issuecomment-7183022660) |
 | Ray-tracing pipelines never arrive | the dxil-spirv in released vkd3d-proton recurses without bound on some large compute shaders and the pipeline thread dies; fixed in vkd3d-proton master | `VICTORY_VKD3D`, [avatarmanz#111](https://github.com/avatarmanz/VIctory-7900XTX/issues/111#issuecomment-7183122720) |
 | Main characters without faces (eyes, teeth and hair only) with relay stage 2 | pieces of card copies fetched on the copy queue while a later flight rewrote them (one or two a frame) reach title memory; the fork's `VICTORY_FETCH_CHECK=1` (off by default) fetches them again. The fork's own test `a_result_caught_in_between_is_put_right` fails under Wine without it and passes with it | `run.sh` defaults below, [avatarmanz#138](https://github.com/avatarmanz/VIctory-7900XTX/issues/138) |
-| Main characters without faces after resuming from a checkpoint, with relay stage 1 | not a bad save: any checkpoint, builder on or off; a new game draws them | open, [avatarmanz#67](https://github.com/avatarmanz/VIctory-7900XTX/issues/67#issuecomment-7184111949) |
+| Main characters without faces after resuming from a checkpoint | the head blend-shape map's compute pipeline was not made yet when the title dispatched it once; a wait for it (Beqren) fixes it. Unbounded, the wait held a frame past the title's ~30 s watchdog on a cold shader cache: a crash while loading (`+0x23cf683`) after every translator change; #166's bounded wait loads from a cold cache without it | carried here, [avatarmanz#166](https://github.com/avatarmanz/VIctory-7900XTX/pull/166) |
+| Every session started with no pipelines kept | vkd3d-proton refuses an empty pipeline library given as a non-null empty slice; #151 asks with a null blob. Here: 1,700 pipelines kept after the first run | carried here, [avatarmanz#151](https://github.com/avatarmanz/VIctory-7900XTX/pull/151) |
+| Faces torn while characters talk (mouths far too wide) | 16-bit integer typed loads after a group barrier read stale values on RADV; Beqren's raw-view read, taken only where the view's word says a 16-bit integer view of the loaded size. Without that check (a first port here) a poster's texture went wrong | carried here, Beqren's #129 and [avatarmanz#114](https://github.com/avatarmanz/VIctory-7900XTX/pull/114) |
+| Renderer patch 1 (`VICTORY_PORT_CONSTANTS=1`) | a black screen from the start screen on under vkd3d-proton; patch 2 works and is on in `run.sh` | here |
 | Head skin wrong under Wine | the land echo (Kayotic1337, #59) | `run.sh` defaults below |
 | No facial animation in play | fxceless/victory-fork#927 (tippythetaidum) merged with avatarmanz's partial fix (VIctory `4243a96a`): views in tables take #927's path, views picked from the heap keep `integer_view` | carried here, [#927 comment](https://github.com/fxceless/victory-fork/pull/927#issuecomment-7185216568) |
 | Seconds a frame with the GPU idle | stock wineserver keeps mapped views in a list (Wine bug 60868) | patched wineserver, below |
@@ -131,7 +141,9 @@ overridden from the environment):
 | `VICTORY_RELAY=2 VICTORY_CARD_STEPS=2` | as `play.ps1` (stage 1 and no card steps: ~82 ms a frame against ~66) |
 | `VICTORY_FETCH_CHECK=1` | without it relay stage 2 loses skinned meshes (faces) under vkd3d-proton: torn fetches, above |
 | `VICTORY_LAND_ECHO=0` | breaks head skin under Wine |
-| `VICTORY_CARD_BUFFERS_MIN_MB=1 VICTORY_CARD_BUFFERS_MB=4096` | title buffers of 1 MiB or more get a copy in the card's memory (up to 4 GiB), where the card finds what shaders wrote: ~107 -> ~28 MB a frame compared on the CPU, ~10 % a frame |
+| `VICTORY_CARD_BUFFERS_MIN_MB=1 VICTORY_CARD_BUFFERS_MB=4096` | title buffers of 1 MiB or more get a copy in the card's memory (up to 4 GiB), where the card finds what shaders wrote: ~107 -> ~28 MB a frame compared on the CPU, ~10 % a frame (without any such copies: 0.3-1.3 fps) |
+| `VICTORY_PORT_DESCRIPTORS=1` | upstream's renderer patch 2: the title's descriptor stores tell their slots, no scan of the heap each frame (~50-55 ms a frame preparing against ~58-60) |
+| `WINE_CPU_TOPOLOGY` (from `/sys`) | the title pins its threads as if SMT siblings were numbered side by side, as Windows numbers them; Linux numbers them `n` and `n+cores` (zocram4cc on avatarmanz#129); here about the same frame with ~15 % more draws |
 | `VICTORY_BVH_BUILDER=1` (`--rt`) | the title's ray-tracing structure builder |
 | `VKD3D_SHADER_CACHE_PATH` | otherwise vkd3d-proton keeps its cache in the working directory and runs start cold |
 | `WINEFSYNC=1` | waits in the kernel instead of round trips to wineserver |
@@ -139,8 +151,11 @@ overridden from the environment):
 **Memory:** with `--rt` the process keeps ~15 GB resident and the card uses
 ~8-9 GB of system memory besides; 32 GB is enough with little else open.
 **Saves:** `run.sh` copies the save folder at each start (the last five are
-kept in `saves-backup/`). Resuming from a checkpoint lost the main characters'
-faces with relay stage 1 (open, above).
+kept in `saves-backup/`).
+
+**After a build that changes translations**, the first run translates again
+and the driver makes pipelines: loading is slower once. With #166's bounded
+wait this no longer crashes.
 
 ## Licence
 

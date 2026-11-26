@@ -65,7 +65,7 @@ d() { export "$1=${!1-$2}"; }
 d VICTORY_TEXTURE_NO_WAIT 1; d VICTORY_WIDE_BACK 1; d VICTORY_CARD_REHASH_RUNS 1; d VICTORY_JOIN_COPIES 1
 d VICTORY_INDIRECT_WINDOW 1; d VICTORY_RELAY_COPY 1; d VICTORY_INDIRECT_BATCH 2; d VICTORY_MAP_THREADS 1
 d VICTORY_TITLE_PRIORITIES 0; d VICTORY_CARD_AWAKE 1; d VICTORY_SHOW_AFTER 1; d VICTORY_AMBIENT 0.8
-d VICTORY_D3D12_DRED light; d VICTORY_SKIP_PIPELINES none; d VICTORY_THIN 1; d VICTORY_JOIN_PARTS 8; d VICTORY_UPLOAD_AHEAD 1
+d VICTORY_D3D12_DRED light; d VICTORY_THIN 1; d VICTORY_JOIN_PARTS 8; d VICTORY_UPLOAD_AHEAD 1
 d VICTORY_RELAY 2; d VICTORY_CARD_STEPS 2
 # Under vkd3d-proton relay stage 2 needs the fetch check: pieces of card copies fetched while a
 # later flight rewrote them (one or two a frame) otherwise reach title memory, and skinned meshes
@@ -74,6 +74,16 @@ d VICTORY_FETCH_CHECK 1; d VICTORY_LAND_ECHO 0
 # Title buffers of 1 MiB or more copied in the card's memory (up to 4 GiB): the card finds what
 # shaders wrote instead of the CPU comparing it (~107 -> ~28 MB a frame on the CPU).
 d VICTORY_CARD_BUFFERS_MIN_MB 1; d VICTORY_CARD_BUFFERS_MB 4096
+# Renderer patch 2 (upstream, off there by default): the title's descriptor stores tell their
+# slots instead of a heap scan each frame (~50-55 ms a frame preparing against ~58-60 here).
+# Patch 1 (VICTORY_PORT_CONSTANTS=1) gives a black screen under vkd3d-proton: left off.
+d VICTORY_PORT_DESCRIPTORS 1
+# The title pins its threads as if SMT siblings were numbered side by side (as Windows does);
+# Linux numbers them n and n+cores. Wine is shown them side by side (avatarmanz#129, zocram4cc).
+if [ -z "${WINE_CPU_TOPOLOGY+x}" ]; then
+  topo=$(for c in /sys/devices/system/cpu/cpu[0-9]*/topology/thread_siblings_list; do cat "$c"; done | sort -t, -k1n -u | tr '\n' ',' | sed 's/,$//')
+  case "$topo" in *-*) ;; ?*) export WINE_CPU_TOPOLOGY="$(nproc):$topo" ;; esac
+fi
 [ "$RT" = 1 ] && export VICTORY_BVH_BUILDER=1
 # The title's saves, copied at each start (the last 5 kept): a run killed while the title
 # writes its checkpoint can leave one that loads characters without faces.
