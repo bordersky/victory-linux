@@ -32,7 +32,8 @@ Shader cache warm. The prologue's indoor scenes unless stated:
 | **current tree, `run.sh` defaults** (relay stage 2 with the fetch check) | ~6,800 | 65-67 ms | ~15 |
 | current tree, a lighter view of the same prison | ~4,300 | ~58 ms | ~17 |
 | previous tree (`9c23e8d`), outdoors (driving) | ~9,000-10,600 | 80-110 ms | 9-12 |
-| **current tree, `run.sh` defaults**, from a checkpoint | ~5,900-6,000 | 67-69 ms | ~15 |
+| current tree, relay stage 2 and card steps 2, from a checkpoint | ~5,900-6,000 | 67-69 ms | ~15 |
+| **current tree, `run.sh` defaults** (relay stage 1), from a checkpoint | ~5,400-7,100 | 80-89 ms | 11.2-12.4 |
 | same, with renderer patch 2 (off: textures stretch) | ~2,700-4,000 (moving) | 55-63 ms; 50-55 ms preparing | 16-18 |
 | current tree, `--rt`, Series S profile (`--console series-s`) | ~5,000-6,500 | 80-120 ms (up to ~190 where the card is the limit) | 5-12.6 |
 | current tree, `--rt` | ~5,000-7,000 | 155-220 ms | 4.5-6.4 |
