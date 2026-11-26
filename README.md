@@ -33,7 +33,7 @@ Shader cache warm. The prologue's indoor scenes unless stated:
 | current tree, a lighter view of the same prison | ~4,300 | ~58 ms | ~17 |
 | previous tree (`9c23e8d`), outdoors (driving) | ~9,000-10,600 | 80-110 ms | 9-12 |
 | **current tree, `run.sh` defaults**, from a checkpoint | ~5,900-6,000 | 67-69 ms | ~15 |
-| same, with renderer patch 2 (off by default: textures stretch) | ~2,700-4,000 (moving) | 55-63 ms; 50-55 ms preparing | 16-18 |
+| same, with renderer patch 2 | ~2,700-4,000 (moving) | 55-63 ms; 50-55 ms preparing | 16-18 |
 | current tree, `--rt`, Series S profile (`--console series-s`) | ~5,000-6,500 | 80-120 ms (up to ~190 where the card is the limit) | 5-12.6 |
 | current tree, `--rt` | ~5,000-7,000 | 155-220 ms | 4.5-6.4 |
 
@@ -81,7 +81,7 @@ credited otherwise.
 | Every session started with no pipelines kept | vkd3d-proton refuses an empty pipeline library given as a non-null empty slice; #151 asks with a null blob. Here: 1,700 pipelines kept after the first run | carried here, [avatarmanz#151](https://github.com/avatarmanz/VIctory-7900XTX/pull/151) |
 | Faces torn while characters talk (mouths far too wide) | 16-bit integer typed loads after a group barrier read stale values on RADV; Beqren's raw-view read, taken only where the view's word says a 16-bit integer view of the loaded size. Without that check (a first port here) a poster's texture went wrong | carried here, Beqren's #129 and [avatarmanz#114](https://github.com/avatarmanz/VIctory-7900XTX/pull/114) |
 | Renderer patch 1 (`VICTORY_PORT_CONSTANTS=1`) | a black screen from the start screen on under vkd3d-proton ([avatarmanz#163](https://github.com/avatarmanz/VIctory-7900XTX/issues/163)) | off |
-| Renderer patch 2 (`VICTORY_PORT_DESCRIPTORS=1`) | ~5 ms a frame less preparing, but textures stretch for a moment, more in the Series S profile. Its hook on the title's `memcpy`/`memmove` sees ~5,200 copies a frame into the view heap and marks none of their records; its fallback finds ~190-285 view records a frame late (written by Wine's `ucrtbase` `memcpy` for ~40 % of them, and by two places in the title's code) | off, open |
+| Renderer patch 2 (`VICTORY_PORT_DESCRIPTORS=1`) | ~5 ms a frame less preparing. Its hook on the title's `memcpy`/`memmove` sees ~5,200 copies a frame into the view heap and marks none of their records; its fallback finds ~190-285 view records a frame (written by Wine's `ucrtbase` `memcpy` for ~40 % of them, and by two places in the title's code). With the fallback's defaults (asked every 8 frames, 16 pages a frame) they stayed wrong for frames: textures stretched, more in the Series S profile. Asked every frame, 128 pages: none seen, 0.2-0.5 ms a frame (up to ~7 ms at a scene change) | `run.sh`: `VICTORY_PORT_DESCRIPTORS_EVERY=1 VICTORY_PORT_DESCRIPTORS_CHECK=128`; why the hook marks nothing is open |
 | Ray tracing in the Series X profile | the card is the limit (83-89 % busy, the submitting thread waits ~110 ms a frame for it); the Series S profile's lower resolution gives 80-120 ms against 140-195 | `--console series-s` |
 | Head skin wrong under Wine | the land echo (Kayotic1337, #59) | `run.sh` defaults below |
 | No facial animation in play | fxceless/victory-fork#927 (tippythetaidum) merged with avatarmanz's partial fix (VIctory `4243a96a`): views in tables take #927's path, views picked from the heap keep `integer_view` | carried here, [#927 comment](https://github.com/fxceless/victory-fork/pull/927#issuecomment-7185216568) |

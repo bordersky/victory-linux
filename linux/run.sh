@@ -74,9 +74,11 @@ d VICTORY_FETCH_CHECK 1; d VICTORY_LAND_ECHO 0
 # Title buffers of 1 MiB or more copied in the card's memory (up to 4 GiB): the card finds what
 # shaders wrote instead of the CPU comparing it (~107 -> ~28 MB a frame on the CPU).
 d VICTORY_CARD_BUFFERS_MIN_MB 1; d VICTORY_CARD_BUFFERS_MB 4096
-# Renderer patches (upstream, off by default) stay off: patch 1 (VICTORY_PORT_CONSTANTS=1) gives a
-# black screen under vkd3d-proton; with patch 2 (VICTORY_PORT_DESCRIPTORS=1) textures stretch for a
-# moment: under Wine its memcpy hook marks none of the ~250 view records a frame its fallback finds.
+# Renderer patch 1 (VICTORY_PORT_CONSTANTS=1) gives a black screen under vkd3d-proton: off.
+# Patch 2 on, with its fallback asked every frame and 128 pages a frame looked at: under Wine its
+# memcpy hook marks none of the ~250 view records a frame the fallback finds, and with the
+# defaults (every 8 frames, 16 pages) they stayed wrong for frames (stretched textures).
+d VICTORY_PORT_DESCRIPTORS 1; d VICTORY_PORT_DESCRIPTORS_EVERY 1; d VICTORY_PORT_DESCRIPTORS_CHECK 128
 # The title pins its threads as if SMT siblings were numbered side by side (as Windows does);
 # Linux numbers them n and n+cores. Wine is shown them side by side (avatarmanz#129, zocram4cc).
 if [ -z "${WINE_CPU_TOPOLOGY+x}" ]; then
