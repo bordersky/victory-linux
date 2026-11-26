@@ -24,6 +24,10 @@ jobs:
       # The version and components pinned in rust-toolchain.toml.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+      # Not stored here (docs/asset-policy.md): fetched from upstream VIctory, SHA-256 checked.
+      - name: BCPack tables
+        shell: bash
+        run: linux/fetch-tables.sh
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Clippy, diagnostics build
