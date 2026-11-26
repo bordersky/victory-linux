@@ -66,9 +66,11 @@ d VICTORY_TEXTURE_NO_WAIT 1; d VICTORY_WIDE_BACK 1; d VICTORY_CARD_REHASH_RUNS 1
 d VICTORY_INDIRECT_WINDOW 1; d VICTORY_RELAY_COPY 1; d VICTORY_INDIRECT_BATCH 2; d VICTORY_MAP_THREADS 1
 d VICTORY_TITLE_PRIORITIES 0; d VICTORY_CARD_AWAKE 1; d VICTORY_SHOW_AFTER 1; d VICTORY_AMBIENT 0.8
 d VICTORY_D3D12_DRED light; d VICTORY_SKIP_PIPELINES none; d VICTORY_THIN 1; d VICTORY_JOIN_PARTS 8; d VICTORY_UPLOAD_AHEAD 1
-# Under vkd3d-proton: relay stage 2 and card steps hand back wrong skinned meshes (faces gone),
-# and the land echo breaks head skin under Wine (avatarmanz/VIctory-7900XTX#13, #59).
-d VICTORY_RELAY 1; d VICTORY_CARD_STEPS 0; d VICTORY_LAND_ECHO 0
+d VICTORY_RELAY 2; d VICTORY_CARD_STEPS 2
+# Under vkd3d-proton relay stage 2 needs the fetch check: pieces of card copies fetched while a
+# later flight rewrote them (one or two a frame) otherwise reach title memory, and skinned meshes
+# (faces) are lost. The land echo breaks head skin under Wine (avatarmanz/VIctory-7900XTX#59).
+d VICTORY_FETCH_CHECK 1; d VICTORY_LAND_ECHO 0
 [ "$RT" = 1 ] && export VICTORY_BVH_BUILDER=1
 # The title's saves, copied at each start (the last 5 kept): a run killed while the title
 # writes its checkpoint can leave one that loads characters without faces.

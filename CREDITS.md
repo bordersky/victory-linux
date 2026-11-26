@@ -30,12 +30,15 @@ This repository is a tree of other people's work with Linux fixes on top.
 | Holes found by `VirtualQuery` when Wine does not answer `MemoryRegionInformationEx` | Kayotic1337 | [avatarmanz#59](https://github.com/avatarmanz/VIctory-7900XTX/issues/59) |
 | The first-lane shortcut by default in the structure builder's programs only | bordersky | [avatarmanz#101](https://github.com/avatarmanz/VIctory-7900XTX/issues/101) |
 | Comments name no game | bordersky | here |
+| Relay stage 2 with the fetch check under vkd3d-proton (torn fetches found by the fork's device tests run under Wine) | bordersky | here |
 | Linux build and run scripts (`linux/`), the BCPack tables fetched rather than stored, saves copied at each start | bordersky | here |
 
 ## Settings and findings from others' reports
 
-- `VICTORY_RELAY=1 VICTORY_CARD_STEPS=0` under vkd3d-proton: firefloc and the
-  commenters of [avatarmanz#13](https://github.com/avatarmanz/VIctory-7900XTX/issues/13);
+- Faces lost under vkd3d-proton with relay stage 2: first reported by firefloc
+  and the commenters of [avatarmanz#13](https://github.com/avatarmanz/VIctory-7900XTX/issues/13)
+  (who worked around it with `VICTORY_RELAY=1 VICTORY_CARD_STEPS=0`); the fetch
+  check that fixes it is avatarmanz's (`VICTORY_FETCH_CHECK`, `host/torn.rs`);
   `VICTORY_LAND_ECHO=0`: Kayotic1337, [avatarmanz#59](https://github.com/avatarmanz/VIctory-7900XTX/issues/59).
 - The wineserver that keeps mapped views in a tree:
   [CachyOS/wine-cachyos#50](https://github.com/CachyOS/wine-cachyos/pull/50)

@@ -27,10 +27,18 @@ Same spot in the prologue (an indoor scene), shader cache warm:
 | this base | ~3,900 | 87-88 ms | ~11.4 |
 | this base | ~6,500-7,000 | 100-110 ms | 9-10 |
 | this base, ray tracing with the structure builder (`--rt`) | ~6,800-7,000 | 148-152 ms | ~6.7 |
+| upstream at `9c23e8d`, relay stage 2 with the fetch check (below) | ~6,800 | 65-67 ms | ~15 |
+
+The last row is a later run: avatarmanz's main at `9c23e8d` with this
+repository's two source changes, a release build, `VICTORY_CARD_BUFFERS_MIN_MB=1
+VICTORY_CARD_BUFFERS_MB=4096`, the indoor scene of a new game. Relay stage 1 in
+the same build and scene: ~82 ms at ~6,650 draws;
+with stage 2 the submitting thread no longer waits for the card (~27-31 ms a
+frame before).
 
 With `--rt` the title's own ray-traced light runs: bounce light, sun and lamp
 shadows; without it rooms that the sun does not reach are lit by a constant
-ambient instead. Characters keep their faces and skin with the settings below, in a session started from a new game (resuming from a checkpoint loses the main characters' faces: open).
+ambient instead. Characters keep their faces and skin with the settings below, in a session started from a new game (resuming from a checkpoint lost the main characters' faces with relay stage 1, a separate bug, open; not tried yet with the fetch check).
 Minor graphical glitches remain.
 
 ## What this project adds
@@ -45,8 +53,9 @@ credited otherwise.
 | ~13,000 `VirtualQuery` a frame, contending on Wine's one `virtual_mutex` | Wine answers no `MemoryRegionInformationEx`, so no hole is ever known; a `VirtualQuery` fallback (Kayotic1337) | carried here, [avatarmanz#59](https://github.com/avatarmanz/VIctory-7900XTX/issues/59); here ~10 a frame |
 | The ray-tracing builder needs a global shortcut (`VICTORY_FIRSTLANE_OWN=1`) | no program of the title's shader archive needs it (all 26,084 translate without it); taken by default in the builder's programs only | here, [avatarmanz#101](https://github.com/avatarmanz/VIctory-7900XTX/issues/101#issuecomment-7183022660) |
 | Ray-tracing pipelines never arrive | the dxil-spirv in released vkd3d-proton recurses without bound on some large compute shaders and the pipeline thread dies; fixed in vkd3d-proton master | `VICTORY_VKD3D`, [avatarmanz#111](https://github.com/avatarmanz/VIctory-7900XTX/issues/111#issuecomment-7183122720) |
-| Main characters without faces (eyes, teeth and hair only) | not a bad save: a session resumed from a checkpoint draws them so, any setting, builder on or off; a new game draws them | open, [avatarmanz#67](https://github.com/avatarmanz/VIctory-7900XTX/issues/67#issuecomment-7184111949) |
-| Faces and skinned meshes wrong under vkd3d-proton | relay stage 2 and card steps (firefloc, #13), the land echo (#59) | `run.sh` defaults below |
+| Main characters without faces (eyes, teeth and hair only) with relay stage 2 | pieces of card copies fetched on the copy queue while a later flight rewrote them (one or two a frame) reach title memory; the fork's `VICTORY_FETCH_CHECK=1` (off by default) fetches them again. The fork's own test `a_result_caught_in_between_is_put_right` fails under Wine without it and passes with it | `run.sh` defaults below |
+| Main characters without faces after resuming from a checkpoint, with relay stage 1 | not a bad save: any checkpoint, builder on or off; a new game draws them | open, [avatarmanz#67](https://github.com/avatarmanz/VIctory-7900XTX/issues/67#issuecomment-7184111949) |
+| Head skin wrong under Wine | the land echo (Kayotic1337, #59) | `run.sh` defaults below |
 | Seconds a frame with the GPU idle | stock wineserver keeps mapped views in a list (Wine bug 60868) | patched wineserver, below |
 
 Earlier, on the Belobug base: the pipeline library refused by vkd3d-proton
@@ -103,8 +112,8 @@ overridden from the environment):
 
 | Setting | Why |
 |---|---|
-| `VICTORY_RELAY=1` | stage 2 hands back skinned meshes too early under vkd3d-proton (faces gone) |
-| `VICTORY_CARD_STEPS=0` | card steps hand back wrong skinned vertices (also on Windows) |
+| `VICTORY_RELAY=2 VICTORY_CARD_STEPS=2` | as `play.ps1` (stage 1 and no card steps: ~82 ms a frame against ~66) |
+| `VICTORY_FETCH_CHECK=1` | without it relay stage 2 loses skinned meshes (faces) under vkd3d-proton: torn fetches, above |
 | `VICTORY_LAND_ECHO=0` | breaks head skin under Wine |
 | `VICTORY_BVH_BUILDER=1` (`--rt`) | the title's ray-tracing structure builder |
 | `VKD3D_SHADER_CACHE_PATH` | otherwise vkd3d-proton keeps its cache in the working directory and runs start cold |
@@ -113,8 +122,8 @@ overridden from the environment):
 **Memory:** with `--rt` the process keeps ~15 GB resident and the card uses
 ~8-9 GB of system memory besides; 32 GB is enough with little else open.
 **Saves:** `run.sh` copies the save folder at each start (the last five are
-kept in `saves-backup/`). Resuming from a checkpoint currently loses the main
-characters' faces here; a new game keeps them.
+kept in `saves-backup/`). Resuming from a checkpoint lost the main characters'
+faces with relay stage 1 (open, above).
 
 ## Licence
 
