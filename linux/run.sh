@@ -71,6 +71,9 @@ d VICTORY_RELAY 2; d VICTORY_CARD_STEPS 2
 # later flight rewrote them (one or two a frame) otherwise reach title memory, and skinned meshes
 # (faces) are lost. The land echo breaks head skin under Wine (avatarmanz/VIctory-7900XTX#59).
 d VICTORY_FETCH_CHECK 1; d VICTORY_LAND_ECHO 0
+# Title buffers of 1 MiB or more copied in the card's memory (up to 4 GiB): the card finds what
+# shaders wrote instead of the CPU comparing it (~107 -> ~28 MB a frame on the CPU).
+d VICTORY_CARD_BUFFERS_MIN_MB 1; d VICTORY_CARD_BUFFERS_MB 4096
 [ "$RT" = 1 ] && export VICTORY_BVH_BUILDER=1
 # The title's saves, copied at each start (the last 5 kept): a run killed while the title
 # writes its checkpoint can leave one that loads characters without faces.

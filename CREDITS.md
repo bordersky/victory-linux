@@ -9,7 +9,8 @@ This repository is a tree of other people's work with Linux fixes on top.
   people whose pull requests it carries (its own description is kept in
   [docs/README-fxceless.md](docs/README-fxceless.md)).
 - **[avatarmanz/VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX)**:
-  this repository's base since 2026-11-26, at `b0cfe2b` (speed on AMD RDNA 3,
+  this repository's base since 2026-11-26, at `b0cfe2b` then its main at
+  `9c23e8d` (speed on AMD RDNA 3,
   frame record and replay, findings). Its commits name the commits and authors
   they were taken from; its credits include:
   - **[DexNom/VIctory](https://github.com/DexNom/VIctory)**: ray tracing (the
@@ -27,6 +28,7 @@ This repository is a tree of other people's work with Linux fixes on top.
 
 | Change | Author | Where |
 |---|---|---|
+| Facial animation: 16-bit buffer accesses keep their bits (fxceless/victory-fork#927, six commits cherry-picked; merged here with VIctory `4243a96a` already in the base) | tippythetaidum; the merge bordersky | [fxceless#927](https://github.com/fxceless/victory-fork/pull/927) |
 | Holes found by `VirtualQuery` when Wine does not answer `MemoryRegionInformationEx` | Kayotic1337 | [avatarmanz#59](https://github.com/avatarmanz/VIctory-7900XTX/issues/59) |
 | The first-lane shortcut by default in the structure builder's programs only | bordersky | [avatarmanz#101](https://github.com/avatarmanz/VIctory-7900XTX/issues/101) |
 | Comments name no game | bordersky | here |

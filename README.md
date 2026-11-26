@@ -5,8 +5,9 @@ titles, built and run on **Linux under Wine**, with what it takes to run there
 and the measurements behind each choice.
 
 It now starts from [avatarmanz/VIctory-7900XTX](https://github.com/avatarmanz/VIctory-7900XTX)
-at `b0cfe2b` (itself a fork of [fxceless/victory-fork](https://github.com/fxceless/victory-fork)),
-the fastest tree measured here. Until 2026-11-26 it was built on
+(itself a fork of [fxceless/victory-fork](https://github.com/fxceless/victory-fork)),
+the fastest tree measured here: `b0cfe2b` first, now its main at `9c23e8d`, with
+fxceless/victory-fork#927 (facial animation) on top. Until 2026-11-26 it was built on
 [Belobug's AMD fork](https://github.com/Belobug/VIctory-Belobug-AMD); that
 state is in the history (`51a3912`). See [CREDITS.md](CREDITS.md) for where
 each change comes from.
@@ -19,7 +20,7 @@ endorsed by any game's developer or publisher, nor by Microsoft.
 
 Arch Linux, AMD Radeon RX 7900 XT 20 GB (Mesa RADV), Ryzen 9 5900X, 32 GB RAM,
 GE-Proton10-34's Wine with a patched wineserver (below), vkd3d-proton master.
-Same spot in the prologue (an indoor scene), shader cache warm:
+Shader cache warm. The prologue's indoor scenes unless stated:
 
 | Tree | Draws a frame | Frame | FPS |
 |---|---|---|---|
@@ -27,19 +28,33 @@ Same spot in the prologue (an indoor scene), shader cache warm:
 | this base | ~3,900 | 87-88 ms | ~11.4 |
 | this base | ~6,500-7,000 | 100-110 ms | 9-10 |
 | this base, ray tracing with the structure builder (`--rt`) | ~6,800-7,000 | 148-152 ms | ~6.7 |
-| upstream at `9c23e8d`, relay stage 2 with the fetch check (below) | ~6,800 | 65-67 ms | ~15 |
+| **current tree, `run.sh` defaults** (relay stage 2 with the fetch check) | ~6,800 | 65-67 ms | ~15 |
+| current tree, a lighter view of the same prison | ~4,300 | ~58 ms | ~17 |
+| current tree, outdoors (driving) | ~9,000-10,600 | 80-110 ms | 9-12 |
 
-The last row is a later run: avatarmanz's main at `9c23e8d` with this
-repository's two source changes, a release build, `VICTORY_CARD_BUFFERS_MIN_MB=1
-VICTORY_CARD_BUFFERS_MB=4096`, the indoor scene of a new game. Relay stage 1 in
-the same build and scene: ~82 ms at ~6,650 draws;
-with stage 2 the submitting thread no longer waits for the card (~27-31 ms a
-frame before).
+The current rows are from avatarmanz's main at `9c23e8d` with this repository's
+source changes and #927, `linux/build.sh release`, and `run.sh`'s settings, in a
+new game. On the first row's spot, relay stage 1 gives ~82 ms at ~6,650 draws in
+the same build: with stage 2 the submitting thread no longer waits for the card
+(~27-31 ms a frame before). The frame is CPU-bound here: the card is about
+55-60 % busy, and it waits ~25-30 ms a frame for the thread that prepares
+submissions.
 
 With `--rt` the title's own ray-traced light runs: bounce light, sun and lamp
 shadows; without it rooms that the sun does not reach are lit by a constant
-ambient instead. Characters keep their faces and skin with the settings below, in a session started from a new game (resuming from a checkpoint lost the main characters' faces with relay stage 1, a separate bug, open; not tried yet with the fetch check).
-Minor graphical glitches remain.
+ambient instead.
+
+In a new game, characters keep their faces and skin with the settings below,
+and with #927 their faces animate in play (before, only cutscenes did). Open:
+- **Resuming from a checkpoint** loses the main characters' faces: with relay
+  stage 1, and still with stage 2 and the fetch check.
+- **One main character's mouth** opens far too wide when she talks. It is also
+  reported on an RX 7900 XT on #927.
+- **Outdoors**, some faces and textures blink or stretch for a moment, with the
+  card's memory nearly full.
+- **Two crashes** in the title's code reading address 0
+  (`+0x1884fb`, `+0x4e9b578`), with relay stage 2, one of them while driving.
+- A locker with a black texture, and other minor glitches.
 
 ## What this project adds
 
@@ -56,6 +71,7 @@ credited otherwise.
 | Main characters without faces (eyes, teeth and hair only) with relay stage 2 | pieces of card copies fetched on the copy queue while a later flight rewrote them (one or two a frame) reach title memory; the fork's `VICTORY_FETCH_CHECK=1` (off by default) fetches them again. The fork's own test `a_result_caught_in_between_is_put_right` fails under Wine without it and passes with it | `run.sh` defaults below, [avatarmanz#138](https://github.com/avatarmanz/VIctory-7900XTX/issues/138) |
 | Main characters without faces after resuming from a checkpoint, with relay stage 1 | not a bad save: any checkpoint, builder on or off; a new game draws them | open, [avatarmanz#67](https://github.com/avatarmanz/VIctory-7900XTX/issues/67#issuecomment-7184111949) |
 | Head skin wrong under Wine | the land echo (Kayotic1337, #59) | `run.sh` defaults below |
+| No facial animation in play | fxceless/victory-fork#927 (tippythetaidum) merged with avatarmanz's partial fix (VIctory `4243a96a`): views in tables take #927's path, views picked from the heap keep `integer_view` | carried here, [#927 comment](https://github.com/fxceless/victory-fork/pull/927#issuecomment-7185216568) |
 | Seconds a frame with the GPU idle | stock wineserver keeps mapped views in a list (Wine bug 60868) | patched wineserver, below |
 
 Earlier, on the Belobug base: the pipeline library refused by vkd3d-proton
@@ -115,6 +131,7 @@ overridden from the environment):
 | `VICTORY_RELAY=2 VICTORY_CARD_STEPS=2` | as `play.ps1` (stage 1 and no card steps: ~82 ms a frame against ~66) |
 | `VICTORY_FETCH_CHECK=1` | without it relay stage 2 loses skinned meshes (faces) under vkd3d-proton: torn fetches, above |
 | `VICTORY_LAND_ECHO=0` | breaks head skin under Wine |
+| `VICTORY_CARD_BUFFERS_MIN_MB=1 VICTORY_CARD_BUFFERS_MB=4096` | title buffers of 1 MiB or more get a copy in the card's memory (up to 4 GiB), where the card finds what shaders wrote: ~107 -> ~28 MB a frame compared on the CPU, ~10 % a frame |
 | `VICTORY_BVH_BUILDER=1` (`--rt`) | the title's ray-tracing structure builder |
 | `VKD3D_SHADER_CACHE_PATH` | otherwise vkd3d-proton keeps its cache in the working directory and runs start cold |
 | `WINEFSYNC=1` | waits in the kernel instead of round trips to wineserver |
